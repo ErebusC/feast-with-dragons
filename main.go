@@ -56,6 +56,7 @@ Ebook flags:
   -out  <path>         Output file (default: <splicing name>.epub)
   -annotate            Add a source book annotation to each chapter
   -numbered-toc        Prepend chapter numbers to the table of contents
+  -words-per-page <n>  Approximate words between page markers (default: 500)
 
 Audio flags:
   -splicing <n>        Splicing to use (default: fwd)
@@ -120,6 +121,7 @@ func main() {
 		splicingFlag := fs.String("splicing", "fwd", "Splicing to use")
 		annotateFlag := fs.Bool("annotate", false, "Add source book annotation to each chapter")
 		numberedTOCFlag := fs.Bool("numbered-toc", false, "Prepend chapter numbers to the table of contents")
+		wppFlag := fs.Int("words-per-page", 500, "Approximate words between page markers (lower = more pages)")
 		addCommonFlags(fs)
 		var bookFlags repeatable
 		fs.Var(&bookFlags, "book", "id=path for a source epub; repeatable")
@@ -147,6 +149,10 @@ func main() {
 		}
 		checkOutputExists(outPath)
 		resolveDefaultSources(sources, cwd, ".epub")
+
+		if *wppFlag > 0 {
+			wordsPerPage = *wppFlag
+		}
 
 		if err := runEbook(sources, outPath, cfg, *annotateFlag, *numberedTOCFlag); err != nil {
 			fatal("Error: %v", err)

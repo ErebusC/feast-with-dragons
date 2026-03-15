@@ -274,6 +274,9 @@ func runEbook(sources map[string]string, outputPath string, cfg *Config, annotat
 
 	// Chapters in splicing order.
 	logf("Writing chapters...\n")
+	nextPage := 1
+	var allPageRefs []PageRef
+
 	for i, entry := range cfg.Chapters {
 		pos := i + 1
 		destName := fmt.Sprintf("chapter_%03d.html", pos)
@@ -312,6 +315,16 @@ func runEbook(sources map[string]string, outputPath string, cfg *Config, annotat
 			chHTML = insertBeforeBodyClose(chHTML, []byte(banner))
 		}
 
+		// Insert page break markers every ~250 words for Kindle page
+		// number support. This must happen after annotation insertion
+		// so the annotation text is not counted towards page breaks.
+		var refs []PageRef
+		chHTML, refs = insertPageMarkers(chHTML, nextPage, destName)
+		allPageRefs = append(allPageRefs, refs...)
+		if len(refs) > 0 {
+			nextPage = refs[len(refs)-1].Num + 1
+		}
+
 		cw.write("OEBPS/Text/"+destName, chHTML)
 
 		id := fmt.Sprintf("chapter_%03d", pos)
@@ -321,11 +334,20 @@ func runEbook(sources map[string]string, outputPath string, cfg *Config, annotat
 		navPoints = append(navPoints, fmt.Sprintf(
 			"    <navPoint id=\"np-%d\" playOrder=\"%d\">\n      <navLabel><text>%s</text></navLabel>\n      <content src=\"Text/%s\"/>\n    </navPoint>",
 			playOrder, playOrder, xmlEscape(entry.Title), destName))
-		pageTargets = append(pageTargets, fmt.Sprintf(
-			"    <pageTarget id=\"page-%d\" type=\"normal\" value=\"%d\">\n      <navLabel><text>%d</text></navLabel>\n      <content src=\"Text/%s\"/>\n    </pageTarget>",
-			pos, pos, pos, destName))
 		playOrder++
 	}
+
+	// Build page targets from the collected word-level page refs.
+	for _, ref := range allPageRefs {
+		src := fmt.Sprintf("Text/%s", ref.DestFile)
+		if ref.Fragment != "" {
+			src += "#" + ref.Fragment
+		}
+		pageTargets = append(pageTargets, fmt.Sprintf(
+			"    <pageTarget id=\"pt-%d\" type=\"normal\" value=\"%d\">\n      <navLabel><text>%d</text></navLabel>\n      <content src=\"%s\"/>\n    </pageTarget>",
+			ref.Num, ref.Num, ref.Num, src))
+	}
+	logf("  %d page markers inserted.\n", len(allPageRefs))
 
 	bookID := sanitiseID(strings.ToLower(cfg.Name))
 	cw.write("OEBPS/content.opf",
