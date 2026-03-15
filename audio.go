@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -223,6 +224,7 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		escapeFFMeta(cfg.Name), escapeFFMeta(author))
 
 	logf("Extracting chapters...\n")
+	extractStart := time.Now()
 	var offsetMs int64
 	for i, ch := range cfg.Chapters {
 		bookID, num := ch.Book, ch.Num
@@ -231,8 +233,18 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		}
 		lc, _ := getSegment(bookID, num, ch.Title)
 
+		// Print progress before extraction so the user sees activity
+		// immediately, not after a potentially slow segment completes.
+		elapsed := time.Since(extractStart).Truncate(time.Second)
+		logf("  [%03d/%d] %s (%.1fs, %d segment(s)) [%s elapsed]\n",
+			i+1, len(cfg.Chapters), ch.Title, lc.DurSec(), len(lc.Segments), elapsed)
+
 		for j, seg := range lc.Segments {
 			segPath := filepath.Join(tmpDir, fmt.Sprintf("seg_%04d_%02d.m4a", i, j))
+			// Stream-copy for speed. This preserves original timestamps
+			// which can cause cosmetic PTS/DTS warnings during the concat
+			// pass, but the output audio is correct and plays without
+			// issues in all tested players.
 			err := runCommandSilent("ffmpeg",
 				"-y",
 				"-ss", fmt.Sprintf("%f", seg.StartSec),
@@ -246,8 +258,11 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			if err != nil {
 				return fmt.Errorf("extracting %s ch%d segment %d: %w", bookID, num, j, err)
 			}
-			escaped := strings.ReplaceAll(segPath, `\`, `\\`)
-			escaped = strings.ReplaceAll(escaped, "'", `\'`)
+			// Use the bare filename in the concat list. The concat file
+			// and all segment files are in the same temp directory, and
+			// ffmpeg resolves paths relative to the concat file's location.
+			segName := fmt.Sprintf("seg_%04d_%02d.m4a", i, j)
+			escaped := strings.ReplaceAll(segName, "'", `\'`)
 			fmt.Fprintf(concatFile, "file '%s'\n", escaped)
 		}
 
@@ -256,9 +271,6 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		offsetMs += durMs
 		fmt.Fprintf(metaFile, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n\n",
 			start, offsetMs, escapeFFMeta(ch.Title))
-
-		logf("  [%03d/%d] %s (%.1fs, %d segment(s))\n",
-			i+1, len(cfg.Chapters), ch.Title, lc.DurSec(), len(lc.Segments))
 	}
 	if err := concatFile.Close(); err != nil {
 		return fmt.Errorf("writing concat list: %w", err)
@@ -267,9 +279,16 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		return fmt.Errorf("writing chapter metadata: %w", err)
 	}
 
-	logf("\nRunning ffmpeg -> %s\n", outputPath)
-	return runCommand("ffmpeg",
+	logf("\n  Extraction complete (%s).\n", time.Since(extractStart).Truncate(time.Second))
+	logf("  Total audio duration: %s\n", formatDuration(float64(offsetMs)/1000))
+	logf("\nConcatenating %d segments and writing chapter metadata...\n", len(cfg.Chapters))
+	logf("  This includes a faststart pass that rewrites the file for faster seeking.\n")
+	logf("  The tool will exit once this completes.\n")
+
+	concatStart := time.Now()
+	err = runCommand("ffmpeg",
 		"-y",
+		"-loglevel", "error",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", concatPath,
@@ -278,6 +297,32 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		"-map_metadata", "1",
 		"-map_chapters", "1",
 		"-c", "copy",
+		"-movflags", "+faststart",
 		outputPath,
 	)
+	if err != nil {
+		return err
+	}
+
+	info, _ := os.Stat(outputPath)
+	logf("\nDone. Output: %s (%.1f MB, %s)\n",
+		outputPath,
+		float64(info.Size())/1_048_576,
+		time.Since(concatStart).Truncate(time.Second))
+	return nil
+}
+
+// formatDuration converts seconds to a human-readable "Xh Ym Zs" string.
+func formatDuration(secs float64) string {
+	total := int(secs)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }

@@ -52,23 +52,33 @@ func buildOPF(bookID, title, author string, manifestItems, spineItems []string, 
 	)
 }
 
-func buildNCX(bookID, title string, navPoints []string) string {
+func buildNCX(bookID, title string, navPoints, pageTargets []string) string {
+	totalPages := len(pageTargets)
+	pageList := ""
+	if totalPages > 0 {
+		pageList = fmt.Sprintf("\n  <pageList>\n%s\n  </pageList>",
+			strings.Join(pageTargets, "\n"))
+	}
+
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
     <meta name="dtb:uid" content="%s"/>
     <meta name="dtb:depth" content="1"/>
-    <meta name="dtb:totalPageCount" content="0"/>
-    <meta name="dtb:maxPageNumber" content="0"/>
+    <meta name="dtb:totalPageCount" content="%d"/>
+    <meta name="dtb:maxPageNumber" content="%d"/>
   </head>
   <docTitle><text>%s</text></docTitle>
   <navMap>
 %s
-  </navMap>
+  </navMap>%s
 </ncx>`,
 		bookID,
+		totalPages,
+		totalPages,
 		xmlEscape(title),
 		strings.Join(navPoints, "\n"),
+		pageList,
 	)
 }

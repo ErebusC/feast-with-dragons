@@ -221,18 +221,16 @@ func runEbook(sources map[string]string, outputPath string, cfg *Config, annotat
 	}
 
 	// Cover HTML page.
-	series := cfg.Series
-	if series == "" {
-		series = "A Song of Ice and Fire"
-	}
 	author := cfg.Author
 	if author == "" {
 		author = "George R. R. Martin"
 	}
-	cw.write("OEBPS/Text/cover.html", []byte(buildCoverHTML(cfg.Name, series, author)))
+	cw.write("OEBPS/Text/cover.html", []byte(buildCoverHTML(cfg.Name)))
 
-	// Build spine, manifest, and NCX nav.
-	var spineItems, navPoints []string
+	// Build spine, manifest, NCX nav, and page-list.
+	// The page-list assigns a page number to each chapter start, which gives
+	// Kindle readers page markers instead of raw locations.
+	var spineItems, navPoints, pageTargets []string
 	playOrder := 1
 
 	// Cover in spine but not NCX.
@@ -323,6 +321,9 @@ func runEbook(sources map[string]string, outputPath string, cfg *Config, annotat
 		navPoints = append(navPoints, fmt.Sprintf(
 			"    <navPoint id=\"np-%d\" playOrder=\"%d\">\n      <navLabel><text>%s</text></navLabel>\n      <content src=\"Text/%s\"/>\n    </navPoint>",
 			playOrder, playOrder, xmlEscape(entry.Title), destName))
+		pageTargets = append(pageTargets, fmt.Sprintf(
+			"    <pageTarget id=\"page-%d\" type=\"normal\" value=\"%d\">\n      <navLabel><text>%d</text></navLabel>\n      <content src=\"Text/%s\"/>\n    </pageTarget>",
+			pos, pos, pos, destName))
 		playOrder++
 	}
 
@@ -330,7 +331,7 @@ func runEbook(sources map[string]string, outputPath string, cfg *Config, annotat
 	cw.write("OEBPS/content.opf",
 		[]byte(buildOPF(bookID, cfg.Name, author, manifestItems, spineItems, len(cfg.Chapters) > 0)))
 	cw.write("OEBPS/toc.ncx",
-		[]byte(buildNCX(bookID, cfg.Name, navPoints)))
+		[]byte(buildNCX(bookID, cfg.Name, navPoints, pageTargets)))
 
 	if cw.err != nil {
 		return fmt.Errorf("writing epub contents: %w", cw.err)
@@ -391,45 +392,27 @@ func buildCombinedChapter(entry ChapterEntry, zipIndexes map[string]map[string]*
 // Embedded HTML templates
 // ---------------------------------------------------------------------------
 
-func buildCoverHTML(title, series, author string) string {
+func buildCoverHTML(title string) string {
+	// Kindle's HTML renderer does not support position:absolute reliably,
+	// causing text overlay to render on a separate page from the image.
+	// The cover page shows just the image; title and author are in the
+	// OPF metadata which readers display in their library view.
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title>%s</title>
   <style type="text/css">
-    body  { margin: 0; padding: 0; background: #000; }
-    .wrap { position: relative; display: inline-block; width: 100%%; }
-    img   { display: block; width: 100%%; height: auto; }
-    .text { position: absolute; top: 0; left: 0; right: 0;
-            text-align: center; padding-top: 4%%; }
-    .title  { font-family: serif; font-size: 5vw; color: #dcc89b;
-               letter-spacing: 0.08em; text-transform: uppercase;
-               text-shadow: 2px 2px 6px #000; display: block; }
-    .series { font-family: serif; font-size: 2.4vw; color: #ece8dc;
-               text-shadow: 1px 1px 4px #000; display: block; margin-top: 0.4em; }
-    .author { position: absolute; bottom: 0; left: 0; right: 0;
-               text-align: center; padding-bottom: 3%%;
-               font-family: serif; font-size: 2.4vw; color: #ece8dc;
-               text-shadow: 1px 1px 4px #000; }
+    body { margin: 0; padding: 0; text-align: center; background: #000; }
+    img  { max-width: 100%%; max-height: 100%%; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <img src="../Images/cover.jpg" alt="%s"/>
-    <div class="text">
-      <span class="title">%s</span>
-      <span class="series">%s</span>
-    </div>
-    <div class="author">%s</div>
-  </div>
+  <img src="../Images/cover.jpg" alt="%s"/>
 </body>
 </html>`,
 		xmlEscape(title),
 		xmlEscape(title),
-		xmlEscape(title),
-		xmlEscape(series),
-		xmlEscape(author),
 	)
 }
 

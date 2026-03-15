@@ -72,9 +72,12 @@ func runMergeAudio(inputPaths []string, outputPath, title, author string) error 
 		return fmt.Errorf("writing chapter metadata: %w", err)
 	}
 
-	logf("\nRunning ffmpeg -> %s\n", outputPath)
-	return runCommand("ffmpeg",
+	logf("\nConcatenating and writing chapter metadata...\n")
+	logf("  This includes a faststart pass that rewrites the file for faster seeking.\n")
+	logf("  The tool will exit once this completes.\n")
+	err = runCommand("ffmpeg",
 		"-y",
+		"-loglevel", "error",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", concatPath,
@@ -83,8 +86,16 @@ func runMergeAudio(inputPaths []string, outputPath, title, author string) error 
 		"-map_metadata", "1",
 		"-map_chapters", "1",
 		"-c", "copy",
+		"-movflags", "+faststart",
 		outputPath,
 	)
+	if err != nil {
+		return err
+	}
+
+	info, _ := os.Stat(outputPath)
+	logf("\nDone. Output: %s (%.1f MB)\n", outputPath, float64(info.Size())/1_048_576)
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +212,7 @@ func runMergeEpub(inputPaths []string, outputPath, title, author string) error {
 	cw.write("OEBPS/content.opf",
 		[]byte(buildOPF(bookID, title, author, manifestItems, spineItems, false)))
 	cw.write("OEBPS/toc.ncx",
-		[]byte(buildNCX(bookID, title, navPoints)))
+		[]byte(buildNCX(bookID, title, navPoints, nil)))
 
 	if cw.err != nil {
 		return fmt.Errorf("writing epub contents: %w", cw.err)
