@@ -512,6 +512,65 @@ func runScan(epubPath string) error {
 }
 
 // ---------------------------------------------------------------------------
+// scan --json: machine-readable spine output
+// ---------------------------------------------------------------------------
+
+// ScanEntry is a single spine entry for JSON output.
+type ScanEntry struct {
+	Num      int    `json:"num"`
+	File     string `json:"file"`
+	NCXTitle string `json:"ncx_title,omitempty"`
+	Snippet  string `json:"snippet,omitempty"`
+}
+
+// runScanJSON outputs the spine of an epub as a JSON array.
+func runScanJSON(epubPath string) error {
+	r, err := zip.OpenReader(epubPath)
+	if err != nil {
+		return fmt.Errorf("opening epub: %w", err)
+	}
+	defer r.Close()
+
+	opfDir, pkg, idx, err := readOPF(&r.Reader)
+	if err != nil {
+		return err
+	}
+
+	hrefByID := make(map[string]string, len(pkg.Manifest.Items))
+	for _, item := range pkg.Manifest.Items {
+		hrefByID[item.ID] = path.Join(opfDir, item.Href)
+	}
+
+	_, pathToTitle, _ := readNCXIndex(&r.Reader, pkg, opfDir, idx)
+
+	var entries []ScanEntry
+	for i, ref := range pkg.Spine.Items {
+		href := hrefByID[ref.IDRef]
+		if href == "" {
+			continue
+		}
+		entry := ScanEntry{
+			Num:      i + 1,
+			File:     path.Base(href),
+			NCXTitle: pathToTitle[href],
+		}
+		if f, ok := idx[href]; ok {
+			if raw, err := readZipEntry(f); err == nil {
+				entry.Snippet = firstTextSnippet(raw, 50)
+			}
+		}
+		entries = append(entries, entry)
+	}
+
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Text extraction helper
 // ---------------------------------------------------------------------------
 

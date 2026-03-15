@@ -163,6 +163,31 @@ func loadConfig(name string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+
+	// Warn about book IDs that are not in the explicit books map and have no
+	// built-in defaults. These will need to be provided via -book flags at
+	// runtime. This catches typos like "AFC" instead of "AFFC" early.
+	knownIDs := map[string]bool{"AFFC": true, "ADWD": true}
+	for id := range cfg.Books {
+		knownIDs[id] = true
+	}
+	warned := map[string]bool{}
+	for _, ch := range cfg.Chapters {
+		ids := []string{ch.Book}
+		if ch.IsCombined() {
+			ids = nil
+			for _, p := range ch.Parts {
+				ids = append(ids, p.Book)
+			}
+		}
+		for _, id := range ids {
+			if id != "" && !knownIDs[id] && !warned[id] {
+				fmt.Fprintf(os.Stderr, "Note: config references book ID %q which has no built-in defaults and no entry in the \"books\" section. Supply it via -book %s=<path> at runtime.\n", id, id)
+				warned[id] = true
+			}
+		}
+	}
+
 	return &cfg, nil
 }
 

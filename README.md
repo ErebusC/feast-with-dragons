@@ -50,6 +50,7 @@ If no subcommand is given, `ebook` is assumed.
 | `merge` | Concatenate whole books without chapter-level splicing |
 | `scan` | Print the spine of an epub, or generate a skeleton config with `-init` |
 | `validate` | Dry-run a config against source epubs without producing output |
+| `diff` | Compare two splicings and show chapter differences |
 
 ### Common flags
 
@@ -80,6 +81,7 @@ feast-with-dragons ebook [flags]
 | `-book id=path` | | Source epub for a custom book ID; repeatable |
 | `-out` | `<splicing name>.epub` | Output file path |
 | `-annotate` | off | Add a small source book annotation (e.g. `[AFFC]`) to the bottom of each chapter |
+| `-numbered-toc` | off | Prepend chapter numbers to the table of contents |
 | `-quiet` | off | Suppress progress output |
 | `-force` | off | Overwrite an existing output file |
 
@@ -194,14 +196,18 @@ feast-with-dragons scan [flags] <epub>
 |---|---|---|
 | `-init` | | Write a skeleton JSON config to this path instead of printing the spine |
 | `-id` | `MYBOOK` | Book ID to use in the generated config (only with `-init`) |
+| `-json` | off | Output the spine as a JSON array instead of a table |
 
 When `-init` is given, the tool reads the epub's spine and NCX and writes a JSON config file with one chapter entry per spine item. Titles are taken from the NCX labels where available, falling back to a text snippet from the page content. The generated config has `auto_detect` and `use_spine` enabled for the book. Edit the output to reorder, remove, or relabel chapters as needed.
+
+When `-json` is given, the spine is printed as a JSON array with `num`, `file`, `ncx_title`, and `snippet` fields per entry. Useful for scripting or piping into other tools.
 
 ### Examples
 
 ```
 feast-with-dragons scan mybook.epub
 feast-with-dragons scan -init myconfig.json -id GOT mybook.epub
+feast-with-dragons scan -json mybook.epub
 ```
 
 ---
@@ -228,6 +234,23 @@ feast-with-dragons validate [flags]
 ```
 feast-with-dragons validate
 feast-with-dragons validate -splicing ./my-config.json -book MYBOOK=./mybook.epub
+```
+
+---
+
+## diff
+
+Compares two splicings and shows which chapters are unique to each, and which appear in both but at different positions. Accepts built-in splicing names or paths to custom JSON configs.
+
+```
+feast-with-dragons diff <splicing-a> <splicing-b>
+```
+
+### Examples
+
+```
+feast-with-dragons diff fwd boiled
+feast-with-dragons diff fwd ./my-custom-order.json
 ```
 
 ---
@@ -290,6 +313,8 @@ Each key is a book ID string. Values are objects with the following fields, all 
 | `auto_detect` | Boolean. Derive CSS, cover, and image paths from the OPF manifest at build time. Does **not** imply `use_spine`. See below |
 
 For book IDs `AFFC` and `ADWD`, built-in defaults are provided for all fields and match the specific epub editions listed under Requirements. Fields present in the `books` section override the built-in defaults; absent fields fall back to them. For any other book ID, all relevant fields must be provided explicitly.
+
+If a config references a book ID that is not `AFFC`, `ADWD`, or listed in the `books` section, the tool prints a warning at load time. This catches typos early. The build still proceeds if the ID is supplied at runtime via `-book`.
 
 ### front_matter
 
