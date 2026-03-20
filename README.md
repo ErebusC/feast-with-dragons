@@ -2,7 +2,7 @@
 
 A tool for building combined epub and audiobook files from A Feast for Crows and A Dance with Dragons, interleaved in a custom reading order. Three built-in reading orders are provided, and the tool supports fully custom orders via JSON config files. Both ebook and audio output are supported.
 
-This tool was developed with AI assistance.
+This tool was developed with AI assistance (Claude).
 
 ---
 
@@ -35,7 +35,7 @@ If Go reports a `buildvcs` error, disable VCS stamping:
 go build -buildvcs=false -o feast-with-dragons .
 ```
 
-The binary embeds all three built-in configs at compile time. No additional files are required at runtime.
+The binary embeds all six built-in configs at compile time. No additional files are required at runtime.
 
 ---
 
@@ -55,8 +55,12 @@ If no subcommand is given, `ebook` is assumed.
 | `audio` | Build a spliced M4B from source audio files |
 | `merge` | Concatenate whole books without chapter-level splicing |
 | `scan` | Print the spine of an epub, generate a skeleton config, or output JSON |
+| `scan-audio` | Print the chapter list of an audio file or directory with timings |
 | `validate` | Dry-run a config against source epubs without producing output |
+| `validate-audio` | Dry-run an audio config: probe sources, validate mapping, and show encoding plan |
 | `diff` | Compare two splicings and show chapter differences |
+| `list` | List all built-in splicings with chapter counts |
+| `show` | Print the full chapter-by-chapter breakdown of a splicing |
 
 ### Common flags
 
@@ -88,7 +92,7 @@ feast-with-dragons ebook [flags]
 | `-out` | `<splicing name>.epub` | Output file path |
 | `-annotate` | off | Add a small source book annotation (e.g. `[AFFC]`) to the bottom of each chapter |
 | `-numbered-toc` | off | Prepend chapter numbers to the table of contents |
-| `-words-per-page` | `500` | Approximate words between page markers. Lower values produce more pages; higher values produce fewer. See Page numbers below |
+| `-words-per-page` | `500` | Approximate words between page markers. Overrides the `words_per_page` field in the config JSON if set. See Page numbers below |
 | `-quiet` | off | Suppress progress output |
 | `-force` | off | Overwrite an existing output file |
 
@@ -109,6 +113,8 @@ feast-with-dragons ebook -words-per-page 1000   # coarser, ~750 pages
 ```
 
 The right value depends on your font size and screen size. The page count is reported during the build.
+
+The `words_per_page` field can also be set in the config JSON. The resolution order is: `-words-per-page` flag > `words_per_page` in config > built-in default of 500.
 
 ### Cover image
 
@@ -135,7 +141,7 @@ feast-with-dragons ebook -words-per-page 300 -numbered-toc
 
 ## audio
 
-Builds a spliced M4B by extracting chapter segments from source audio files and concatenating them in the order defined by the active splicing config. Chapter metadata is embedded in the output file.
+Builds a spliced M4B by extracting chapter segments from source audio files and concatenating them in the order defined by the active splicing config. Chapter metadata and optional cover art are embedded in the output file.
 
 Requires ffmpeg and ffprobe on PATH.
 
@@ -152,9 +158,11 @@ feast-with-dragons audio [flags]
 | `-adwd` | auto-detected | File or directory containing ADWD audio |
 | `-book id=path` | | Audio file or directory for a custom book ID; repeatable |
 | `-out` | `<splicing name>.m4b` | Output file path |
+| `-cover` | auto-detected | Cover image to embed in the output file (JPEG or PNG) |
 | `-j` | number of CPUs | Parallel extraction workers. Use `-j 1` for sequential extraction |
+| `-dry-run` | off | Print every ffmpeg command that would be run without executing anything |
 | `-quiet` | off | Suppress progress output |
-| `-force` | off | Overwrite an existing output file |
+| `-force` | off | Overwrite an existing output file and skip the re-encode confirmation prompt |
 
 If `-affc` or `-adwd` are not provided, the tool searches the current directory for audio files whose names contain both `feast` and `crows`, or both `dance` and `dragons`, respectively. Both keywords must be present to match. Multi-part audiobooks are supported: all matching files in the directory are collected and probed in filename order.
 
@@ -170,24 +178,44 @@ Consecutive segments with the same title, including segments that span multiple 
 
 The audio build has three phases:
 
-1. **Probe**: each source audio file is scanned for embedded chapter metadata. The first and last few chapter titles are printed so you can verify the segmentation looks correct. The chapter count is compared against the expected count in the config. The audio stream format (sample rate, channels, bitrate) is probed from each source book to determine the output encoding parameters.
+1. **Probe**: each source audio file is scanned for embedded chapter metadata. The first and last few chapter titles are printed so you can verify the segmentation looks correct. The chapter count is compared against the expected count in the config. The audio stream format (codec, sample rate, channels, bitrate) is probed from each source book to determine the target encoding parameters.
 
-2. **Extract**: each chapter segment is extracted and re-encoded to a consistent AAC format. Re-encoding is necessary because different audiobook sources often have different sample rates, channel counts, or AAC profiles. Stream-copying segments with mismatched formats produces silence after the first source book's segments. Extractions run in parallel using the number of workers set by `-j` (default: number of CPUs). Progress is printed every 10 segments with elapsed time. Expect the extraction phase to take several minutes for a full-length audiobook.
+2. **Extract**: each chapter segment is extracted to a temporary work directory beside the output file. Segments whose source book format already matches the target (same AAC codec, sample rate, and channel count) are stream-copied without re-encoding — this is essentially instant. Segments from books with a different format are re-encoded to match the target. The target format is derived from the highest-quality source book (highest sample rate and channel count). This hybrid approach minimises re-encoding time: in a typical AFFC/ADWD build, ADWD (44100 Hz) segments are stream-copied and only AFFC (22050 Hz) segments are re-encoded.
 
-3. **Concatenate**: the extracted segments are concatenated into the output file with chapter metadata and a faststart pass that moves the MP4 moov atom to the front of the file for faster seeking. This phase can take some time on large audiobooks as it rewrites the entire file. The tool prints a message explaining this and exits once concatenation completes.
+   Segments with `audio_start` or `audio_end` overrides are always re-encoded regardless of format, because stream copy only cuts on keyframe boundaries and cannot make sample-accurate cuts at arbitrary timestamps.
 
-Temporary files are deleted on exit.
+   When re-encoding is required, the tool prints the encoding plan and prompts for confirmation before starting. Pass `-force` to suppress the prompt for non-interactive use.
+
+   Extractions run in parallel using the number of workers set by `-j`. Progress is printed every 10 segments with elapsed time.
+
+3. **Concatenate**: the extracted segments are concatenated into the output file with chapter metadata and a faststart pass that moves the MP4 moov atom to the front of the file for faster seeking.
+
+### Resume support
+
+The work directory uses a deterministic name (`.feast-audio-<outputname>` beside the output file) rather than a random temp directory. If the build is interrupted, re-running the same command will skip any segment files already present and larger than 1 KB, resuming from where it left off. The work directory is removed automatically on successful completion. On failure it is kept, and its path is printed so you can inspect it.
+
+### Cover art
+
+The tool auto-detects a cover image by searching the directories containing the source audio files for any of these filenames: `cover.jpg`, `cover.jpeg`, `cover.png`, `folder.jpg`, `folder.jpeg`, `folder.png`. The first match is used. The `-cover` flag overrides this with an explicit path. If no cover is found or specified, the output file has no embedded artwork.
+
+### Probe caching
+
+ffprobe results (chapter lists and audio formats) are cached per source file in `~/.cache/feast-with-dragons/`. Repeated `validate-audio` or `audio` runs on the same source files skip the probe entirely and use the cached data. The cache is keyed by a hash of the absolute file path and is automatically invalidated when the file's modification time or size changes.
 
 ### Diagnostic output
 
-Before extraction begins, the tool prints a full mapping of config chapters to audio segments, showing the source book, segment number, audio title, and time position. This makes it easy to spot mapping problems:
+Before extraction begins, the tool prints a full mapping of config chapters to audio segments, showing the source book, segment number, audio title, time position, and whether each book will be stream-copied or re-encoded:
 
 ```
 Validating chapter mapping...
-  [001] Prologue (Pate) -> AFFC seg 1 "Chapter 1" (0.0s-1234.5s)
-  [002] Prologue (Varamyr) -> ADWD seg 1 "Prologue" (0.0s-1500.2s)
-  [003] Jon I -> ADWD seg 4 "Jon I" (5000.3s-6200.1s)
+  [001] Prologue (Pate) -> AFFC seg 1 "Chapter 1" (0.0s-2612.8s)
+  [002] Prologue (Varamyr) -> ADWD seg 1 "Prologue" (15.3s-2434.6s)
+  ...
+Format:   ADWD aac 44100Hz 2ch — stream copy
+Format:   AFFC aac 22050Hz 2ch — would re-encode to 44100Hz 2ch
 ```
+
+Use `validate-audio` to see this output without starting the build.
 
 ### Examples
 
@@ -196,6 +224,9 @@ feast-with-dragons audio
 feast-with-dragons audio -affc ./affc.m4b -adwd ./adwd-part1.m4b
 feast-with-dragons audio -splicing boiled -out "Boiled Leather.m4b"
 feast-with-dragons audio -j 2
+feast-with-dragons audio -dry-run
+feast-with-dragons audio -cover ./my-cover.jpg
+feast-with-dragons audio -force   # skips re-encode prompt, overwrites existing output
 ```
 
 ---
@@ -259,6 +290,25 @@ feast-with-dragons scan -json mybook.epub
 
 ---
 
+## scan-audio
+
+Probes an audio file or directory and prints the embedded chapter list with start times, end times, and durations. Useful for inspecting source files when authoring configs or finding the correct `audio_start`/`audio_end` split points.
+
+```
+feast-with-dragons scan-audio <file-or-directory>
+```
+
+When given a directory, all audio files in it are probed in filename order and their chapters are listed with a running chapter number across all files.
+
+### Examples
+
+```
+feast-with-dragons scan-audio ./affc.m4b
+feast-with-dragons scan-audio ./adwd-parts/
+```
+
+---
+
 ## validate
 
 Dry-runs a config against source epubs without producing any output. Reports missing chapters, duplicate entries, missing source epubs, and out-of-range spine references. Useful for checking a custom config before committing to a full build.
@@ -285,6 +335,34 @@ feast-with-dragons validate -splicing ./my-config.json -book MYBOOK=./mybook.epu
 
 ---
 
+## validate-audio
+
+Probes source audio files and validates the chapter-to-segment mapping without extracting any audio. Also prints the encoding plan (which books will be stream-copied and which will be re-encoded) so you can review it before starting the build.
+
+```
+feast-with-dragons validate-audio [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-splicing` | `fwd` | Splicing to validate |
+| `-affc` | auto-detected | File or directory for AFFC audio |
+| `-adwd` | auto-detected | File or directory for ADWD audio |
+| `-book id=path` | | Audio file or directory for a custom book ID; repeatable |
+| `-quiet` | off | Suppress per-chapter mapping output |
+
+### Examples
+
+```
+feast-with-dragons validate-audio
+feast-with-dragons validate-audio -splicing fwd-audible
+feast-with-dragons validate-audio -quiet   # show only the summary
+```
+
+---
+
 ## diff
 
 Compares two splicings and shows which chapters are unique to each, and which appear in both but at different positions. Accepts built-in splicing names or paths to custom JSON configs.
@@ -298,6 +376,36 @@ feast-with-dragons diff <splicing-a> <splicing-b>
 ```
 feast-with-dragons diff fwd boiled
 feast-with-dragons diff fwd ./my-custom-order.json
+```
+
+---
+
+## list
+
+Lists all built-in splicings with their chapter counts and a short description.
+
+```
+feast-with-dragons list
+```
+
+---
+
+## show
+
+Prints the full chapter-by-chapter breakdown of a splicing: position, source book, chapter number within that book, and title. Combined chapters and audio overrides are annotated.
+
+```
+feast-with-dragons show [splicing]
+```
+
+If no splicing is specified, `fwd` is used.
+
+### Examples
+
+```
+feast-with-dragons show
+feast-with-dragons show boiled
+feast-with-dragons show fwd-audible   # shows [audio_num] and [audio_override] annotations
 ```
 
 ---
@@ -353,6 +461,7 @@ Any JSON file can be passed to `-splicing`. The schema is as follows.
 | `name` | yes | Title of the output book, used for the epub title and default output filename |
 | `author` | no | Author name written into epub and audio metadata. Defaults to `George R. R. Martin` for epub and `Unknown` for audio if omitted |
 | `series` | no | Series name stored in metadata |
+| `words_per_page` | no | Default words-per-page interval for ebook page markers. Overridden by the `-words-per-page` flag |
 | `books` | no | Per-book extraction config. If omitted, built-in defaults for AFFC and ADWD are used |
 | `front_matter` | yes | Array of front matter pages to include before the table of contents |
 | `chapters` | yes | Array of chapter entries in the desired reading order |
@@ -509,6 +618,8 @@ Three chapter-level fields correct for this without affecting the epub build:
 
 `audio_start` and `audio_end` allow a single audio segment to be split into two chapter entries. One entry sets `audio_end` at the transition point, and the next entry sets `audio_num` to the same segment with `audio_start` at that point. This extracts two separate output chapters from one source track.
 
+Note: segments with `audio_start` or `audio_end` set are always re-encoded regardless of source format, because stream copy cannot make sample-accurate cuts at arbitrary timestamps.
+
 Example: AFFC Cersei IX and The Princess in the Tower are merged in audio segment 40, with the transition at 104318.8 seconds:
 
 ```json
@@ -526,6 +637,7 @@ The `num` values remain correct for the epub builder. The `audio_num` and timest
 {
   "name": "My Reading Order",
   "author": "George R. R. Martin",
+  "words_per_page": 400,
   "front_matter": [
     {"book": "AFFC", "file": "OEBPS/Text/Mart_9780553900323_epub_ded_r1.htm", "title": "Dedication"}
   ],
