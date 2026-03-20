@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -162,10 +165,82 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		if bk.ExpectedChapters > 0 && len(segs) != bk.ExpectedChapters {
 			logf("  WARNING: expected %d %s chapters, got %d\n", bk.ExpectedChapters, id, len(segs))
 		}
+		// Show the first few and last few audio chapter titles so the user
+		// can verify the mapping looks correct before extraction begins.
+		preview := 5
+		if len(segs) <= preview*2 {
+			for si, seg := range segs {
+				logf("    [%d] %s (%.0fs at %.1fs)\n", si+1, seg.Title, seg.DurSec(), seg.Segments[0].StartSec)
+			}
+		} else {
+			for si := 0; si < preview; si++ {
+				logf("    [%d] %s (%.0fs at %.1fs)\n", si+1, segs[si].Title, segs[si].DurSec(), segs[si].Segments[0].StartSec)
+			}
+			logf("    ... (%d more) ...\n", len(segs)-preview*2)
+			for si := len(segs) - preview; si < len(segs); si++ {
+				logf("    [%d] %s (%.0fs at %.1fs)\n", si+1, segs[si].Title, segs[si].DurSec(), segs[si].Segments[0].StartSec)
+			}
+		}
 		segsPerBook[id] = segs
 	}
 
-	getSegment := func(bookID string, num int, title string) (LogicalChapter, error) {
+	// Probe audio format from source files to determine encoding parameters.
+	// When source books have different codecs, sample rates, or channel
+	// counts, stream-copy produces a file where only the first segment's
+	// format is honoured by the decoder. Re-encoding all segments to a
+	// consistent format avoids this.
+	var encArgs []string
+	{
+		var maxRate, maxCh, maxBR int
+		for _, id := range orderedIDs {
+			segs := segsPerBook[id]
+			if len(segs) == 0 {
+				continue
+			}
+			// Probe the first segment's source file.
+			af, err := probeAudioFormat(segs[0].Segments[0].File)
+			if err != nil {
+				logf("  WARNING: could not probe %s audio format: %v\n", id, err)
+				continue
+			}
+			logf("  %s format: %s %dHz %dch %dkbps\n",
+				id, af.Codec, af.SampleRate, af.Channels, af.BitRate/1000)
+			if af.SampleRate > maxRate {
+				maxRate = af.SampleRate
+			}
+			if af.Channels > maxCh {
+				maxCh = af.Channels
+			}
+			if af.BitRate > maxBR {
+				maxBR = af.BitRate
+			}
+		}
+		// Fall back to sensible defaults if probing failed.
+		if maxRate == 0 {
+			maxRate = 44100
+		}
+		if maxCh == 0 {
+			maxCh = 2
+		}
+		if maxBR == 0 {
+			maxBR = 128000
+		}
+		// Round bitrate to nearest common value.
+		brK := maxBR / 1000
+		if brK < 48 {
+			brK = 48
+		}
+		logf("  Output format: aac %dHz %dch %dkbps\n", maxRate, maxCh, brK)
+
+		encArgs = []string{
+			"-c:a", "aac",
+			"-b:a", fmt.Sprintf("%dk", brK),
+			"-ar", fmt.Sprintf("%d", maxRate),
+			"-ac", fmt.Sprintf("%d", maxCh),
+		}
+	}
+
+	lookupSegment := func(bookID string, num int) (LogicalChapter, error) {
 		segs, ok := segsPerBook[bookID]
 		if !ok {
 			return LogicalChapter{}, fmt.Errorf("no audio loaded for book %q", bookID)
@@ -175,26 +250,49 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			return LogicalChapter{}, fmt.Errorf("%s chapter %d (index %d) out of range (have %d segments)",
 				bookID, num, idx, len(segs))
 		}
-		lc := segs[idx]
-		expected := povName(title)
-		if !strings.EqualFold(lc.Title, expected) &&
-			!strings.Contains(strings.ToLower(lc.Title), strings.ToLower(expected)) &&
-			!strings.Contains(strings.ToLower(expected), strings.ToLower(lc.Title)) {
-			logf("  NOTE: %s ch%d -- config title %q, audio title %q\n", bookID, num, expected, lc.Title)
-		}
-		return lc, nil
+		return segs[idx], nil
 	}
 
 	logf("Validating chapter mapping...\n")
-	for _, ch := range cfg.Chapters {
+	for i, ch := range cfg.Chapters {
+		bookID := ch.Book
+		audioNum := ch.AudioEffectiveNum()
 		if ch.IsCombined() {
-			if _, err := getSegment(ch.Parts[0].Book, ch.Parts[0].Num, ch.Title); err != nil {
-				return err
-			}
-		} else {
-			if _, err := getSegment(ch.Book, ch.Num, ch.Title); err != nil {
-				return err
-			}
+			bookID = ch.Parts[0].Book
+			audioNum = ch.Parts[0].Num
+		}
+		lc, err := lookupSegment(bookID, audioNum)
+		if err != nil {
+			return err
+		}
+		// Title mismatch note -- only logged here, not during extraction.
+		expected := povName(ch.Title)
+		if !strings.EqualFold(lc.Title, expected) &&
+			!strings.Contains(strings.ToLower(lc.Title), strings.ToLower(expected)) &&
+			!strings.Contains(strings.ToLower(expected), strings.ToLower(lc.Title)) {
+			logf("  NOTE: %s ch%d -- config title %q, audio title %q\n", bookID, audioNum, expected, lc.Title)
+		}
+		seg := lc.Segments[0]
+		startSec := seg.StartSec
+		endSec := seg.StartSec + lc.DurSec()
+		suffix := ""
+		if ch.AudioStart != nil {
+			startSec = *ch.AudioStart
+			suffix += fmt.Sprintf(" [audio_start=%.1f]", startSec)
+		}
+		if ch.AudioEnd != nil {
+			endSec = *ch.AudioEnd
+			suffix += fmt.Sprintf(" [audio_end=%.1f]", endSec)
+		}
+		if ch.AudioNum > 0 {
+			suffix += fmt.Sprintf(" [audio_num=%d]", ch.AudioNum)
+		}
+		logf("  [%03d] %s -> %s seg %d %q (%.1fs-%.1fs)%s\n",
+			i+1, ch.Title, bookID, audioNum, lc.Title,
+			startSec, endSec, suffix)
+		dur := endSec - startSec
+		if dur < 60 {
+			logf("  WARNING: segment is only %.0fs -- this audiobook edition may have combined it with the preceding chapter\n", dur)
 		}
 	}
 
@@ -204,84 +302,175 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 	}
 	defer os.RemoveAll(tmpDir)
 
-	concatPath := filepath.Join(tmpDir, "concat.txt")
-	metaPath := filepath.Join(tmpDir, "chapters.txt")
+	// Build the list of extraction jobs, the concat file, and the metadata
+	// file up front. All filenames and durations are known before extraction
+	// starts, so these can be written first and then extractions run in
+	// parallel without coordination.
 
-	concatFile, err := os.Create(concatPath)
-	if err != nil {
-		return err
+	type extractJob struct {
+		segPath  string
+		file     string
+		startSec float64
+		durSec   float64
+		label    string // for error messages
 	}
-	metaFile, err := os.Create(metaPath)
-	if err != nil {
-		return err
-	}
+
+	var jobs []extractJob
+	var concatLines []string
+	var offsetMs int64
 
 	author := cfg.Author
 	if author == "" {
 		author = "Unknown"
 	}
-	fmt.Fprintf(metaFile, ";FFMETADATA1\ntitle=%s\nartist=%s\n\n",
+
+	var metaBuf strings.Builder
+	fmt.Fprintf(&metaBuf, ";FFMETADATA1\ntitle=%s\nartist=%s\n\n",
 		escapeFFMeta(cfg.Name), escapeFFMeta(author))
 
-	logf("Extracting chapters...\n")
-	extractStart := time.Now()
-	var offsetMs int64
 	for i, ch := range cfg.Chapters {
-		bookID, num := ch.Book, ch.Num
+		bookID := ch.Book
+		audioNum := ch.AudioEffectiveNum()
 		if ch.IsCombined() {
-			bookID, num = ch.Parts[0].Book, ch.Parts[0].Num
+			bookID = ch.Parts[0].Book
+			audioNum = ch.Parts[0].Num
 		}
-		lc, _ := getSegment(bookID, num, ch.Title)
+		lc, _ := lookupSegment(bookID, audioNum)
 
-		// Print progress before extraction so the user sees activity
-		// immediately, not after a potentially slow segment completes.
-		elapsed := time.Since(extractStart).Truncate(time.Second)
-		logf("  [%03d/%d] %s (%.1fs, %d segment(s)) [%s elapsed]\n",
-			i+1, len(cfg.Chapters), ch.Title, lc.DurSec(), len(lc.Segments), elapsed)
+		// When audio_start or audio_end are set, the chapter is extracted
+		// from explicit timestamps rather than the segment's metadata
+		// boundaries. This handles audiobook editions where two book
+		// chapters are merged into one audio track.
+		if ch.AudioStart != nil || ch.AudioEnd != nil {
+			seg := lc.Segments[0]
+			startSec := seg.StartSec
+			endSec := seg.EndSec
+			if ch.AudioStart != nil {
+				startSec = *ch.AudioStart
+			}
+			if ch.AudioEnd != nil {
+				endSec = *ch.AudioEnd
+			}
+			dur := endSec - startSec
+			segName := fmt.Sprintf("seg_%04d_00.m4a", i)
+			segPath := filepath.Join(tmpDir, segName)
+			jobs = append(jobs, extractJob{
+				segPath:  segPath,
+				file:     seg.File,
+				startSec: startSec,
+				durSec:   dur,
+				label:    fmt.Sprintf("%s ch%d (override)", bookID, audioNum),
+			})
+			escaped := strings.ReplaceAll(segName, "'", `\'`)
+			concatLines = append(concatLines, fmt.Sprintf("file '%s'", escaped))
+
+			durMs := int64(dur * 1000)
+			start := offsetMs
+			offsetMs += durMs
+			fmt.Fprintf(&metaBuf, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n\n",
+				start, offsetMs, escapeFFMeta(ch.Title))
+			continue
+		}
 
 		for j, seg := range lc.Segments {
-			segPath := filepath.Join(tmpDir, fmt.Sprintf("seg_%04d_%02d.m4a", i, j))
-			// Stream-copy for speed. This preserves original timestamps
-			// which can cause cosmetic PTS/DTS warnings during the concat
-			// pass, but the output audio is correct and plays without
-			// issues in all tested players.
-			err := runCommandSilent("ffmpeg",
-				"-y",
-				"-ss", fmt.Sprintf("%f", seg.StartSec),
-				"-to", fmt.Sprintf("%f", seg.EndSec),
-				"-i", seg.File,
-				"-map", "0:a",
-				"-c", "copy",
-				"-avoid_negative_ts", "make_zero",
-				segPath,
-			)
-			if err != nil {
-				return fmt.Errorf("extracting %s ch%d segment %d: %w", bookID, num, j, err)
-			}
-			// Use the bare filename in the concat list. The concat file
-			// and all segment files are in the same temp directory, and
-			// ffmpeg resolves paths relative to the concat file's location.
 			segName := fmt.Sprintf("seg_%04d_%02d.m4a", i, j)
+			segPath := filepath.Join(tmpDir, segName)
+			jobs = append(jobs, extractJob{
+				segPath:  segPath,
+				file:     seg.File,
+				startSec: seg.StartSec,
+				durSec:   seg.DurSec(),
+				label:    fmt.Sprintf("%s ch%d seg%d", bookID, audioNum, j),
+			})
 			escaped := strings.ReplaceAll(segName, "'", `\'`)
-			fmt.Fprintf(concatFile, "file '%s'\n", escaped)
+			concatLines = append(concatLines, fmt.Sprintf("file '%s'", escaped))
 		}
 
 		durMs := int64(lc.DurSec() * 1000)
 		start := offsetMs
 		offsetMs += durMs
-		fmt.Fprintf(metaFile, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n\n",
+		fmt.Fprintf(&metaBuf, "[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\ntitle=%s\n\n",
 			start, offsetMs, escapeFFMeta(ch.Title))
 	}
-	if err := concatFile.Close(); err != nil {
+
+	// Write concat and metadata files.
+	concatPath := filepath.Join(tmpDir, "concat.txt")
+	metaPath := filepath.Join(tmpDir, "chapters.txt")
+
+	if err := os.WriteFile(concatPath, []byte(strings.Join(concatLines, "\n")+"\n"), 0644); err != nil {
 		return fmt.Errorf("writing concat list: %w", err)
 	}
-	if err := metaFile.Close(); err != nil {
+	if err := os.WriteFile(metaPath, []byte(metaBuf.String()), 0644); err != nil {
 		return fmt.Errorf("writing chapter metadata: %w", err)
 	}
 
-	logf("\n  Extraction complete (%s).\n", time.Since(extractStart).Truncate(time.Second))
+	// Extract segments in parallel.
+	workers := audioConcurrency
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+	if workers > len(jobs) {
+		workers = len(jobs)
+	}
+
+	logf("Extracting and re-encoding %d segments using %d workers...\n", len(jobs), workers)
+	logf("  Re-encoding normalises audio format across source books for clean concatenation.\n")
+	extractStart := time.Now()
+
+	var completed int64
+	total := int64(len(jobs))
+	var firstErr error
+	var errOnce sync.Once
+
+	jobCh := make(chan extractJob, len(jobs))
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobCh {
+				// Re-encode each segment to a consistent format so the
+				// concat demuxer produces a valid output file regardless
+				// of source codec differences between books.
+				args := []string{
+					"-y",
+					"-i", job.file,
+					"-ss", fmt.Sprintf("%f", job.startSec),
+					"-t", fmt.Sprintf("%f", job.durSec),
+					"-map", "0:a",
+				}
+				args = append(args, encArgs...)
+				args = append(args, job.segPath)
+
+				err := runCommandSilent("ffmpeg", args...)
+				if err != nil {
+					errOnce.Do(func() {
+						firstErr = fmt.Errorf("extracting %s: %w", job.label, err)
+					})
+					return
+				}
+				done := atomic.AddInt64(&completed, 1)
+				if done%10 == 0 || done == total {
+					elapsed := time.Since(extractStart).Truncate(time.Second)
+					logf("  %d/%d segments extracted [%s elapsed]\n", done, total, elapsed)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return firstErr
+	}
+
+	logf("  Extraction complete (%s).\n", time.Since(extractStart).Truncate(time.Second))
 	logf("  Total audio duration: %s\n", formatDuration(float64(offsetMs)/1000))
-	logf("\nConcatenating %d segments and writing chapter metadata...\n", len(cfg.Chapters))
+	logf("\nConcatenating %d segments and writing chapter metadata...\n", len(jobs))
 	logf("  This includes a faststart pass that rewrites the file for faster seeking.\n")
 	logf("  The tool will exit once this completes.\n")
 

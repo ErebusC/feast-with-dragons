@@ -16,6 +16,15 @@ var boiledJSON []byte
 //go:embed configs/ball-of-beasts.json
 var ballJSON []byte
 
+//go:embed configs/fwd-audible.json
+var fwdAudibleJSON []byte
+
+//go:embed configs/boiled-leather-audible.json
+var boiledAudibleJSON []byte
+
+//go:embed configs/ball-of-beasts-audible.json
+var ballAudibleJSON []byte
+
 // Config is the top-level structure for a splicing JSON file.
 type Config struct {
 	Name        string                `json:"name"`
@@ -97,6 +106,23 @@ type ChapterEntry struct {
 	Book  string        `json:"book,omitempty"`
 	Num   int           `json:"num,omitempty"`
 	Parts []ChapterPart `json:"parts,omitempty"`
+
+	// Audio override fields. These allow the audio build to use a different
+	// segment number or time range than the default positional mapping.
+	// They have no effect on the epub build.
+	//
+	// AudioNum overrides Num for audio segment lookup. Use when the audiobook
+	// edition has fewer chapter markers than the epub (e.g. two book chapters
+	// merged into one audio track).
+	AudioNum int `json:"audio_num,omitempty"`
+	// AudioStart is an absolute timestamp (seconds) within the source audio
+	// file. When set, extraction begins at this position instead of the
+	// segment's metadata start time.
+	AudioStart *float64 `json:"audio_start,omitempty"`
+	// AudioEnd is an absolute timestamp (seconds) within the source audio
+	// file. When set, extraction ends at this position instead of the
+	// segment's metadata end time.
+	AudioEnd *float64 `json:"audio_end,omitempty"`
 }
 
 // ChapterPart is one source chapter within a combined entry.
@@ -106,6 +132,15 @@ type ChapterPart struct {
 }
 
 func (e ChapterEntry) IsCombined() bool { return len(e.Parts) > 0 }
+
+// AudioEffectiveNum returns the segment number to use for audio lookup.
+// Returns AudioNum if set, otherwise falls back to Num.
+func (e ChapterEntry) AudioEffectiveNum() int {
+	if e.AudioNum > 0 {
+		return e.AudioNum
+	}
+	return e.Num
+}
 
 // defaultBooks returns built-in BookConfig values for the AFFC and ADWD
 // epub editions. Used when a config does not supply a "books" section.
@@ -152,11 +187,17 @@ func loadConfig(name string) (*Config, error) {
 		data = boiledJSON
 	case "ball", "ball-of-beasts":
 		data = ballJSON
+	case "fwd-audible", "feast-with-dragons-audible":
+		data = fwdAudibleJSON
+	case "boiled-audible", "boiled-leather-audible":
+		data = boiledAudibleJSON
+	case "ball-audible", "ball-of-beasts-audible":
+		data = ballAudibleJSON
 	default:
 		var err error
 		data, err = os.ReadFile(name)
 		if err != nil {
-			return nil, fmt.Errorf("unknown splicing %q -- expected fwd, boiled, ball, or a path to a JSON config file", name)
+			return nil, fmt.Errorf("unknown splicing %q -- expected fwd, boiled, ball (or fwd-audible, boiled-audible, ball-audible), or a path to a JSON config file", name)
 		}
 	}
 	var cfg Config

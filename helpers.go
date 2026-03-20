@@ -16,8 +16,9 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	quietMode bool
-	forceMode bool
+	quietMode        bool
+	forceMode        bool
+	audioConcurrency int
 )
 
 // logf prints a message to stdout unless quiet mode is active.

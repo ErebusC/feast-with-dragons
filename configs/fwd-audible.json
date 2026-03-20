@@ -1,5 +1,5 @@
 {
-  "name": "Boiled Leather",
+  "name": "A Feast with Dragons",
   "front_matter": [
     {
       "book": "AFFC",
@@ -19,14 +19,19 @@
   ],
   "chapters": [
     {
-      "title": "Prologue",
+      "title": "Prologue (Pate)",
+      "book": "AFFC",
+      "num": 1
+    },
+    {
+      "title": "Prologue (Varamyr)",
       "book": "ADWD",
       "num": 1
     },
     {
-      "title": "Prologue",
-      "book": "AFFC",
-      "num": 1
+      "title": "Jon I",
+      "book": "ADWD",
+      "num": 4
     },
     {
       "title": "The Prophet",
@@ -49,19 +54,14 @@
       "num": 2
     },
     {
-      "title": "Daenerys I",
-      "book": "ADWD",
-      "num": 3
-    },
-    {
       "title": "Brienne I",
       "book": "AFFC",
       "num": 5
     },
     {
-      "title": "Jon I",
-      "book": "ADWD",
-      "num": 4
+      "title": "Sansa I",
+      "book": "AFFC",
+      "num": 11
     },
     {
       "title": "Bran I",
@@ -69,24 +69,19 @@
       "num": 5
     },
     {
+      "title": "Arya I",
+      "book": "AFFC",
+      "num": 7
+    },
+    {
       "title": "Tyrion II",
       "book": "ADWD",
       "num": 6
     },
     {
-      "title": "Samwell I",
-      "book": "AFFC",
-      "num": 6
-    },
-    {
-      "title": "Jon II",
+      "title": "Daenerys I",
       "book": "ADWD",
-      "num": 8
-    },
-    {
-      "title": "Arya I",
-      "book": "AFFC",
-      "num": 7
+      "num": 3
     },
     {
       "title": "Cersei II",
@@ -99,19 +94,19 @@
       "num": 9
     },
     {
+      "title": "Samwell I",
+      "book": "AFFC",
+      "num": 6
+    },
+    {
+      "title": "Jon II",
+      "book": "ADWD",
+      "num": 8
+    },
+    {
       "title": "Brienne II",
       "book": "AFFC",
       "num": 10
-    },
-    {
-      "title": "Sansa I",
-      "book": "AFFC",
-      "num": 11
-    },
-    {
-      "title": "The Kraken's Daughter",
-      "book": "AFFC",
-      "num": 12
     },
     {
       "title": "Tyrion III",
@@ -139,6 +134,11 @@
       "num": 13
     },
     {
+      "title": "The Kraken's Daughter",
+      "book": "AFFC",
+      "num": 12
+    },
+    {
       "title": "Cersei III",
       "book": "AFFC",
       "num": 13
@@ -147,6 +147,11 @@
       "title": "The Soiled Knight",
       "book": "AFFC",
       "num": 14
+    },
+    {
+      "title": "Brienne III",
+      "book": "AFFC",
+      "num": 15
     },
     {
       "title": "Bran II",
@@ -164,9 +169,9 @@
       "num": 16
     },
     {
-      "title": "Brienne III",
-      "book": "AFFC",
-      "num": 15
+      "title": "Daenerys III",
+      "book": "ADWD",
+      "num": 17
     },
     {
       "title": "Samwell II",
@@ -174,19 +179,9 @@
       "num": 16
     },
     {
-      "title": "Daenerys III",
-      "book": "ADWD",
-      "num": 17
-    },
-    {
       "title": "Jon IV",
       "book": "ADWD",
       "num": 18
-    },
-    {
-      "title": "Jaime II",
-      "book": "AFFC",
-      "num": 17
     },
     {
       "title": "Tyrion V",
@@ -194,14 +189,14 @@
       "num": 19
     },
     {
+      "title": "Jaime II",
+      "book": "AFFC",
+      "num": 17
+    },
+    {
       "title": "Cersei IV",
       "book": "AFFC",
       "num": 18
-    },
-    {
-      "title": "Davos III",
-      "book": "ADWD",
-      "num": 20
     },
     {
       "title": "The Iron Captain",
@@ -214,9 +209,9 @@
       "num": 20
     },
     {
-      "title": "Brienne IV",
-      "book": "AFFC",
-      "num": 21
+      "title": "Davos III",
+      "book": "ADWD",
+      "num": 20
     },
     {
       "title": "The Queenmaker",
@@ -224,9 +219,9 @@
       "num": 22
     },
     {
-      "title": "Arya II",
+      "title": "Brienne IV",
       "book": "AFFC",
-      "num": 23
+      "num": 21
     },
     {
       "title": "Alayne I",
@@ -234,14 +229,9 @@
       "num": 24
     },
     {
-      "title": "The Princess in the Tower",
+      "title": "Arya II",
       "book": "AFFC",
-      "num": 41
-    },
-    {
-      "title": "The Merchant's Man",
-      "book": "ADWD",
-      "num": 7
+      "num": 23
     },
     {
       "title": "Cersei V",
@@ -264,24 +254,21 @@
       "num": 23
     },
     {
+      "title": "The Princess in the Tower",
+      "book": "AFFC",
+      "num": 41,
+      "audio_num": 40,
+      "audio_start": 104318.8
+    },
+    {
+      "title": "The Merchant's Man",
+      "book": "ADWD",
+      "num": 7
+    },
+    {
       "title": "Daenerys IV",
       "book": "ADWD",
       "num": 24
-    },
-    {
-      "title": "The Lost Lord",
-      "book": "ADWD",
-      "num": 25
-    },
-    {
-      "title": "The Windblown",
-      "book": "ADWD",
-      "num": 26
-    },
-    {
-      "title": "The Wayward Bride",
-      "book": "ADWD",
-      "num": 27
     },
     {
       "title": "Brienne V",
@@ -299,9 +286,39 @@
       "num": 28
     },
     {
+      "title": "Cersei VI",
+      "book": "AFFC",
+      "num": 29
+    },
+    {
+      "title": "The Lost Lord",
+      "book": "ADWD",
+      "num": 25
+    },
+    {
+      "title": "The Windblown",
+      "book": "ADWD",
+      "num": 26
+    },
+    {
+      "title": "The Reaver",
+      "book": "AFFC",
+      "num": 30
+    },
+    {
+      "title": "The Wayward Bride",
+      "book": "ADWD",
+      "num": 27
+    },
+    {
       "title": "Tyrion VII",
       "book": "ADWD",
       "num": 28
+    },
+    {
+      "title": "Daenerys V",
+      "book": "ADWD",
+      "num": 31
     },
     {
       "title": "Jon VI",
@@ -314,26 +331,6 @@
       "num": 30
     },
     {
-      "title": "Cersei VI",
-      "book": "AFFC",
-      "num": 29
-    },
-    {
-      "title": "The Reaver",
-      "book": "AFFC",
-      "num": 30
-    },
-    {
-      "title": "Daenerys V",
-      "book": "ADWD",
-      "num": 31
-    },
-    {
-      "title": "Melisandre I",
-      "book": "ADWD",
-      "num": 32
-    },
-    {
       "title": "Jaime IV",
       "book": "AFFC",
       "num": 31
@@ -344,29 +341,14 @@
       "num": 32
     },
     {
-      "title": "Reek III",
-      "book": "ADWD",
-      "num": 33
-    },
-    {
-      "title": "Tyrion VIII",
-      "book": "ADWD",
-      "num": 34
-    },
-    {
       "title": "Cersei VII",
       "book": "AFFC",
       "num": 33
     },
     {
-      "title": "Jaime V",
-      "book": "AFFC",
-      "num": 34
-    },
-    {
-      "title": "Cat of the Canals",
-      "book": "AFFC",
-      "num": 35
+      "title": "Melisandre I",
+      "book": "ADWD",
+      "num": 32
     },
     {
       "title": "Samwell IV",
@@ -374,29 +356,29 @@
       "num": 36
     },
     {
-      "title": "Cersei VIII",
+      "title": "Cat of the Canals",
       "book": "AFFC",
-      "num": 37
-    },
-    {
-      "title": "Brienne VII",
-      "book": "AFFC",
-      "num": 38
-    },
-    {
-      "title": "Jaime VI",
-      "book": "AFFC",
-      "num": 39
-    },
-    {
-      "title": "Cersei IX",
-      "book": "AFFC",
-      "num": 40
+      "num": 35
     },
     {
       "title": "Bran III",
       "book": "ADWD",
       "num": 35
+    },
+    {
+      "title": "Tyrion VIII",
+      "book": "ADWD",
+      "num": 34
+    },
+    {
+      "title": "Jaime V",
+      "book": "AFFC",
+      "num": 34
+    },
+    {
+      "title": "Reek III",
+      "book": "ADWD",
+      "num": 33
     },
     {
       "title": "Jon VII",
@@ -406,6 +388,11 @@
     {
       "title": "Daenerys VI",
       "book": "ADWD",
+      "num": 37
+    },
+    {
+      "title": "Cersei VIII",
+      "book": "AFFC",
       "num": 37
     },
     {
@@ -419,14 +406,36 @@
       "num": 39
     },
     {
+      "title": "Brienne VII",
+      "book": "AFFC",
+      "num": 38
+    },
+    {
+      "title": "Jaime VI",
+      "book": "AFFC",
+      "num": 39
+    },
+    {
       "title": "Jon VIII",
       "book": "ADWD",
       "num": 40
     },
     {
+      "title": "Alayne II",
+      "book": "AFFC",
+      "num": 42,
+      "audio_num": 41
+    },
+    {
       "title": "Tyrion IX",
       "book": "ADWD",
       "num": 41
+    },
+    {
+      "title": "Cersei IX",
+      "book": "AFFC",
+      "num": 40,
+      "audio_end": 104318.8
     },
     {
       "title": "The Turncloak",
@@ -439,39 +448,32 @@
       "num": 43
     },
     {
+      "title": "Brienne VIII",
+      "book": "AFFC",
+      "num": 43,
+      "audio_num": 42
+    },
+    {
+      "title": "Cersei X",
+      "book": "AFFC",
+      "num": 44,
+      "audio_num": 43
+    },
+    {
+      "title": "Jaime VII",
+      "book": "AFFC",
+      "num": 45,
+      "audio_num": 44
+    },
+    {
       "title": "Daenerys VII",
       "book": "ADWD",
       "num": 44
     },
     {
-      "title": "Alayne II",
-      "book": "AFFC",
-      "num": 42
-    },
-    {
       "title": "Jon IX",
       "book": "ADWD",
       "num": 45
-    },
-    {
-      "title": "Brienne VIII",
-      "book": "AFFC",
-      "num": 43
-    },
-    {
-      "title": "Cersei X",
-      "book": "AFFC",
-      "num": 44
-    },
-    {
-      "title": "Jaime VII",
-      "book": "AFFC",
-      "num": 45
-    },
-    {
-      "title": "Samwell V",
-      "book": "AFFC",
-      "num": 46
     },
     {
       "title": "The Blind Girl",
@@ -504,14 +506,14 @@
       "num": 51
     },
     {
-      "title": "Theon VII",
-      "book": "ADWD",
-      "num": 52
-    },
-    {
       "title": "Daenerys IX",
       "book": "ADWD",
       "num": 53
+    },
+    {
+      "title": "Theon VII",
+      "book": "ADWD",
+      "num": 52
     },
     {
       "title": "Jon XI",
@@ -522,6 +524,11 @@
       "title": "Cersei XI",
       "book": "ADWD",
       "num": 55
+    },
+    {
+      "title": "The Griffin Reborn",
+      "book": "ADWD",
+      "num": 62
     },
     {
       "title": "The Queensguard",
@@ -552,11 +559,6 @@
       "title": "The Spurned Suitor",
       "book": "ADWD",
       "num": 61
-    },
-    {
-      "title": "The Griffin Reborn",
-      "book": "ADWD",
-      "num": 62
     },
     {
       "title": "The Sacrifice",
@@ -599,6 +601,17 @@
       "num": 70
     },
     {
+      "title": "Samwell V",
+      "book": "AFFC",
+      "num": 46,
+      "audio_num": 45
+    },
+    {
+      "title": "Epilogue",
+      "book": "ADWD",
+      "num": 73
+    },
+    {
       "title": "The Queen's Hand",
       "book": "ADWD",
       "num": 71
@@ -607,11 +620,6 @@
       "title": "Daenerys X",
       "book": "ADWD",
       "num": 72
-    },
-    {
-      "title": "Epilogue",
-      "book": "ADWD",
-      "num": 73
     }
   ]
 }

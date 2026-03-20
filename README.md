@@ -29,6 +29,12 @@ All of the above, plus:
 go build -o feast-with-dragons .
 ```
 
+If Go reports a `buildvcs` error, disable VCS stamping:
+
+```
+go build -buildvcs=false -o feast-with-dragons .
+```
+
 The binary embeds all three built-in configs at compile time. No additional files are required at runtime.
 
 ---
@@ -48,7 +54,7 @@ If no subcommand is given, `ebook` is assumed.
 | `ebook` | Build a spliced epub from source epub files |
 | `audio` | Build a spliced M4B from source audio files |
 | `merge` | Concatenate whole books without chapter-level splicing |
-| `scan` | Print the spine of an epub, or generate a skeleton config with `-init` |
+| `scan` | Print the spine of an epub, generate a skeleton config, or output JSON |
 | `validate` | Dry-run a config against source epubs without producing output |
 | `diff` | Compare two splicings and show chapter differences |
 
@@ -82,6 +88,7 @@ feast-with-dragons ebook [flags]
 | `-out` | `<splicing name>.epub` | Output file path |
 | `-annotate` | off | Add a small source book annotation (e.g. `[AFFC]`) to the bottom of each chapter |
 | `-numbered-toc` | off | Prepend chapter numbers to the table of contents |
+| `-words-per-page` | `500` | Approximate words between page markers. Lower values produce more pages; higher values produce fewer. See Page numbers below |
 | `-quiet` | off | Suppress progress output |
 | `-force` | off | Overwrite an existing output file |
 
@@ -89,9 +96,25 @@ If `-affc` or `-adwd` are not provided, the tool searches the current directory 
 
 If the output file already exists the tool refuses to proceed unless `-force` is set.
 
+### Page numbers
+
+The output epub includes page markers inserted at regular word-count intervals throughout each chapter. These markers are referenced by a `<pageList>` in the NCX, which tells readers like Kindle to display page numbers instead of raw locations.
+
+The default interval of 500 words per page produces roughly one page advance per screen tap on Kindle at typical font sizes. If pages advance too quickly (multiple pages per tap), increase the value. If they advance too slowly (tapping several times before the page number changes), decrease it.
+
+```
+feast-with-dragons ebook -words-per-page 300    # finer, ~2400 pages
+feast-with-dragons ebook -words-per-page 500    # default, ~1500 pages
+feast-with-dragons ebook -words-per-page 1000   # coarser, ~750 pages
+```
+
+The right value depends on your font size and screen size. The page count is reported during the build.
+
 ### Cover image
 
-The cover is resolved in this order:
+The cover page displays the cover image only, with no text overlay. This ensures compatibility with Kindle and other readers that do not support CSS absolute positioning in epub content. Title and author information is stored in the OPF metadata and displayed by readers in their library view.
+
+The cover image is resolved in this order:
 
 1. A file named `cover.jpg` in the current directory, if present.
 2. A generated horizontal fade blend of the two source book covers. Both JPEG and PNG cover images are accepted as input; the output is always JPEG.
@@ -105,6 +128,7 @@ feast-with-dragons ebook -splicing boiled
 feast-with-dragons ebook -affc ./my-affc.epub -adwd ./my-adwd.epub -out "My Order.epub"
 feast-with-dragons ebook -splicing ./my-config.json -book AFFC=./affc.epub -book ADWD=./adwd.epub
 feast-with-dragons ebook -annotate -force -out reread.epub
+feast-with-dragons ebook -words-per-page 300 -numbered-toc
 ```
 
 ---
@@ -128,6 +152,7 @@ feast-with-dragons audio [flags]
 | `-adwd` | auto-detected | File or directory containing ADWD audio |
 | `-book id=path` | | Audio file or directory for a custom book ID; repeatable |
 | `-out` | `<splicing name>.m4b` | Output file path |
+| `-j` | number of CPUs | Parallel extraction workers. Use `-j 1` for sequential extraction |
 | `-quiet` | off | Suppress progress output |
 | `-force` | off | Overwrite an existing output file |
 
@@ -141,7 +166,28 @@ Chapters are filtered before assignment. Segments shorter than 30 seconds are dr
 
 Consecutive segments with the same title, including segments that span multiple audio files, are merged into a single logical chapter before assignment. This handles editions that split a chapter across tracks or across parts of a multi-part audiobook.
 
-The build uses a two-pass approach. In the first pass, each chapter segment is extracted to a temporary file with timestamps reset to zero. In the second pass, the temporary files are concatenated and chapter metadata is written. Temporary files are deleted on exit.
+### Build process
+
+The audio build has three phases:
+
+1. **Probe**: each source audio file is scanned for embedded chapter metadata. The first and last few chapter titles are printed so you can verify the segmentation looks correct. The chapter count is compared against the expected count in the config. The audio stream format (sample rate, channels, bitrate) is probed from each source book to determine the output encoding parameters.
+
+2. **Extract**: each chapter segment is extracted and re-encoded to a consistent AAC format. Re-encoding is necessary because different audiobook sources often have different sample rates, channel counts, or AAC profiles. Stream-copying segments with mismatched formats produces silence after the first source book's segments. Extractions run in parallel using the number of workers set by `-j` (default: number of CPUs). Progress is printed every 10 segments with elapsed time. Expect the extraction phase to take several minutes for a full-length audiobook.
+
+3. **Concatenate**: the extracted segments are concatenated into the output file with chapter metadata and a faststart pass that moves the MP4 moov atom to the front of the file for faster seeking. This phase can take some time on large audiobooks as it rewrites the entire file. The tool prints a message explaining this and exits once concatenation completes.
+
+Temporary files are deleted on exit.
+
+### Diagnostic output
+
+Before extraction begins, the tool prints a full mapping of config chapters to audio segments, showing the source book, segment number, audio title, and time position. This makes it easy to spot mapping problems:
+
+```
+Validating chapter mapping...
+  [001] Prologue (Pate) -> AFFC seg 1 "Chapter 1" (0.0s-1234.5s)
+  [002] Prologue (Varamyr) -> ADWD seg 1 "Prologue" (0.0s-1500.2s)
+  [003] Jon I -> ADWD seg 4 "Jon I" (5000.3s-6200.1s)
+```
 
 ### Examples
 
@@ -149,13 +195,14 @@ The build uses a two-pass approach. In the first pass, each chapter segment is e
 feast-with-dragons audio
 feast-with-dragons audio -affc ./affc.m4b -adwd ./adwd-part1.m4b
 feast-with-dragons audio -splicing boiled -out "Boiled Leather.m4b"
+feast-with-dragons audio -j 2
 ```
 
 ---
 
 ## merge
 
-Concatenates two or more epub or audio files into a single output file without chapter-level splicing. For audio, chapter markers from each source file are preserved and their timestamps adjusted to be contiguous in the output.
+Concatenates two or more epub or audio files into a single output file without chapter-level splicing. For audio, chapter markers from each source file are preserved and their timestamps adjusted to be contiguous in the output. Audio output includes a faststart pass for faster seeking.
 
 The output format is determined by the file extension of the `-out` argument.
 
@@ -257,7 +304,7 @@ feast-with-dragons diff fwd ./my-custom-order.json
 
 ## Built-in splicings
 
-Three reading orders are embedded in the binary.
+Six reading orders are embedded in the binary: three standard configs and three with audio overrides for the Audible AFFC edition.
 
 ### fwd -- A Feast with Dragons
 
@@ -277,6 +324,22 @@ A variation that combines Samwell I and Jon II into a single chapter. The Melisa
 
 Selected with `-splicing ball` or `-splicing ball-of-beasts`.
 
+### Audible AFFC edition variants
+
+The Audible unabridged AFFC audiobook has a chapter mapping issue: Cersei IX and The Princess in the Tower are recorded as a single audio track (Chapter 40 in the audiobook metadata), which shifts every subsequent AFFC chapter position by one. The final chapter marker (Chapter 46) is a 38-second credits segment, not Samwell V.
+
+The `-audible` variants of each splicing include audio-specific overrides that correct for this:
+
+- Cersei IX is extracted from the first part of audio segment 40
+- The Princess in the Tower is extracted from the second part of audio segment 40, starting at the chapter transition (approximately 37m 13s into the segment)
+- Chapters 42-46 (Alayne II through Samwell V) are shifted back by one audio segment
+
+These overrides only affect the audio build. The epub output is identical to the standard configs.
+
+Selected with `-splicing fwd-audible`, `-splicing boiled-audible`, or `-splicing ball-audible`.
+
+If the Cersei IX / Princess in the Tower transition sounds clipped or has a few seconds of overlap in your output, adjust the `audio_start` and `audio_end` values in the config JSON. The split point is approximate and may need fine-tuning for your specific file. See Audio chapter overrides below.
+
 ---
 
 ## Custom configs
@@ -289,7 +352,7 @@ Any JSON file can be passed to `-splicing`. The schema is as follows.
 |---|---|---|
 | `name` | yes | Title of the output book, used for the epub title and default output filename |
 | `author` | no | Author name written into epub and audio metadata. Defaults to `George R. R. Martin` for epub and `Unknown` for audio if omitted |
-| `series` | no | Series name shown on the generated cover page. Defaults to `A Song of Ice and Fire` if omitted |
+| `series` | no | Series name stored in metadata |
 | `books` | no | Per-book extraction config. If omitted, built-in defaults for AFFC and ADWD are used |
 | `front_matter` | yes | Array of front matter pages to include before the table of contents |
 | `chapters` | yes | Array of chapter entries in the desired reading order |
@@ -423,6 +486,11 @@ A single chapter:
 | `title` | yes | Chapter title in the output table of contents |
 | `book` | yes | Book ID of the source epub |
 | `num` | yes | Chapter number within that book, 1-indexed |
+| `audio_num` | no | Overrides `num` for audio segment lookup. Use when the audiobook has fewer chapter markers than the epub |
+| `audio_start` | no | Absolute timestamp (seconds) in the source audio file. Extraction begins here instead of the segment's metadata start time |
+| `audio_end` | no | Absolute timestamp (seconds) in the source audio file. Extraction ends here instead of the segment's metadata end time |
+
+The `audio_num`, `audio_start`, and `audio_end` fields are ignored by the epub builder. They exist to handle audiobook editions where two book chapters are merged into one audio track, or where chapter markers don't align with the epub's chapter numbering. See Audio chapter overrides below.
 
 A combined chapter (epub only) concatenates the body content of two or more source chapters into one output file, with a horizontal rule between parts:
 
@@ -430,6 +498,27 @@ A combined chapter (epub only) concatenates the body content of two or more sour
 |---|---|---|
 | `title` | yes | Chapter title in the output table of contents |
 | `parts` | yes | Array of `{"book": "<id>", "num": <n>}` objects |
+
+### Audio chapter overrides
+
+When an audiobook edition has fewer chapter markers than the epub, positional mapping breaks. For example, if the audiobook merges chapters 40 and 41 into a single track, then audio segment 41 contains the content of epub chapter 42, segment 42 contains chapter 43, and so on.
+
+Three chapter-level fields correct for this without affecting the epub build:
+
+`audio_num` tells the audio builder to look up a different segment number than `num`. In the example above, epub chapters 42-46 would each set `audio_num` to one less than their `num` value.
+
+`audio_start` and `audio_end` allow a single audio segment to be split into two chapter entries. One entry sets `audio_end` at the transition point, and the next entry sets `audio_num` to the same segment with `audio_start` at that point. This extracts two separate output chapters from one source track.
+
+Example: AFFC Cersei IX and The Princess in the Tower are merged in audio segment 40, with the transition at 104318.8 seconds:
+
+```json
+{"title": "Cersei IX",                "book": "AFFC", "num": 40, "audio_end": 104318.8},
+{"title": "The Princess in the Tower", "book": "AFFC", "num": 41, "audio_num": 40, "audio_start": 104318.8},
+{"title": "Alayne II",                "book": "AFFC", "num": 42, "audio_num": 41},
+{"title": "Brienne VIII",             "book": "AFFC", "num": 43, "audio_num": 42}
+```
+
+The `num` values remain correct for the epub builder. The `audio_num` and timestamp overrides only affect the audio build. The built-in `-audible` configs use this pattern for the Audible unabridged AFFC edition.
 
 ### Minimal custom config example
 
@@ -477,3 +566,5 @@ Pass a custom book source at runtime with `-book MYBOOK=./mybook.epub`. Run `sca
 The built-in AFFC config targets the Bantam epub edition. Chapter paths follow the pattern `OEBPS/Text/Mart_9780553900323_epub_c##_r1.htm`, with the prologue at `Mart_9780553900323_epub_prl_r1.htm`. For a different edition, add `auto_detect: true` to detect assets automatically. If the NCX in your edition uses full chapter labels (e.g. "JON I", "CERSEI II"), title-based lookup will handle chapter resolution without needing num values to correspond to any particular offset. If the NCX uses POV-only labels without numerals (e.g. "JON", "CERSEI"), num-based fallback applies -- add `use_spine: true` and `spine_offset` as shown by `scan`, or provide an explicit `chapter_template` or `chapter_paths` list.
 
 The built-in ADWD config targets the split-file epub edition. Chapter paths follow the pattern `dummy_split_###.html` with a numeric offset of 4 applied to the chapter number. Front matter files `dummy_split_001.html` and `dummy_split_003.html` contain the dedication and the "Cavil on Chronology" note respectively. A different ADWD edition can be handled the same way as described above for AFFC.
+
+This tool does not include or distribute any copyrighted content. Users must supply their own legally obtained source files.

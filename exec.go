@@ -83,3 +83,55 @@ func runCommandSilent(name string, args ...string) error {
 	}
 	return nil
 }
+
+// AudioFormat describes the audio stream properties of a source file.
+type AudioFormat struct {
+	SampleRate int    // e.g. 44100
+	Channels   int    // e.g. 1 (mono), 2 (stereo)
+	BitRate    int    // e.g. 128000
+	Codec      string // e.g. "aac"
+}
+
+type ffprobeStream struct {
+	SampleRate string `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+	BitRate    string `json:"bit_rate"`
+	CodecName  string `json:"codec_name"`
+}
+
+type ffprobeStreamOutput struct {
+	Streams []ffprobeStream `json:"streams"`
+}
+
+// probeAudioFormat returns the format of the first audio stream in a file.
+func probeAudioFormat(file string) (AudioFormat, error) {
+	out, err := exec.Command("ffprobe",
+		"-v", "quiet",
+		"-print_format", "json",
+		"-show_streams",
+		"-select_streams", "a:0",
+		file,
+	).Output()
+	if err != nil {
+		return AudioFormat{}, fmt.Errorf("ffprobe streams: %w", err)
+	}
+
+	var result ffprobeStreamOutput
+	if err := json.Unmarshal(out, &result); err != nil {
+		return AudioFormat{}, fmt.Errorf("ffprobe json: %w", err)
+	}
+	if len(result.Streams) == 0 {
+		return AudioFormat{}, fmt.Errorf("no audio streams found in %s", file)
+	}
+
+	s := result.Streams[0]
+	sr, _ := strconv.Atoi(s.SampleRate)
+	br, _ := strconv.Atoi(s.BitRate)
+
+	return AudioFormat{
+		SampleRate: sr,
+		Channels:   s.Channels,
+		BitRate:    br,
+		Codec:      s.CodecName,
+	}, nil
+}
