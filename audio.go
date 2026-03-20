@@ -416,7 +416,7 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config, cover
 
 	// Show the encoding plan and prompt when re-encoding is required.
 	logEncodingPlan(probe)
-	if !probe.AllStreamCopy && !forceMode {
+	if !probe.AllStreamCopy && !forceMode && !dryRunMode {
 		fmt.Fprintf(os.Stderr, "\nSome segments require re-encoding to normalise formats.")
 		fmt.Fprintf(os.Stderr, " This may take several minutes.\nContinue? [Y/n]: ")
 		if !readYesNo() {
@@ -425,11 +425,15 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config, cover
 		}
 	}
 
-	tmpDir, err := os.MkdirTemp(filepath.Dir(outputPath), "feast-with-dragons-audio-*")
-	if err != nil {
+	// Use a deterministic work directory so interrupted builds can be resumed.
+	// Segments already present with size > 1 KB are skipped by the worker.
+	// The directory is removed on successful completion only.
+	outBase := strings.TrimSuffix(filepath.Base(outputPath), filepath.Ext(outputPath))
+	tmpDir := filepath.Join(filepath.Dir(outputPath), ".feast-audio-"+sanitiseID(outBase))
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+	logf("  Work directory: %s\n", tmpDir)
 
 	// Build the list of extraction jobs. Each job carries its own encoding
 	// args so stream-copy and re-encode jobs can run in the same worker pool.
@@ -595,7 +599,7 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config, cover
 
 	extractStart := time.Now()
 
-	var completed int64
+	var completed, resumed int64
 	total := int64(len(jobs))
 	var firstErr error
 	var errOnce sync.Once
@@ -612,6 +616,12 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config, cover
 		go func() {
 			defer wg.Done()
 			for job := range jobCh {
+				// Skip segments already extracted in a previous interrupted run.
+				if info, err := os.Stat(job.segPath); err == nil && info.Size() > 1024 {
+					atomic.AddInt64(&resumed, 1)
+					atomic.AddInt64(&completed, 1)
+					continue
+				}
 				args := []string{
 					"-y",
 					"-i", job.file,
@@ -643,7 +653,11 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config, cover
 	wg.Wait()
 
 	if firstErr != nil {
+		logf("  Work directory kept for resume: %s\n", tmpDir)
 		return firstErr
+	}
+	if r := atomic.LoadInt64(&resumed); r > 0 {
+		logf("  Resumed: %d segments reused from previous run.\n", r)
 	}
 
 	logf("  Extraction complete (%s).\n", time.Since(extractStart).Truncate(time.Second))
@@ -687,6 +701,7 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config, cover
 		outputPath,
 		float64(info.Size())/1_048_576,
 		time.Since(concatStart).Truncate(time.Second))
+	os.RemoveAll(tmpDir)
 	return nil
 }
 
