@@ -497,6 +497,27 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			start, offsetMs, escapeFFMeta(ch.Title))
 	}
 
+	// Dry-run: print what would be executed and return.
+	if dryRunMode {
+		logf("\n[dry-run] %d segments would be extracted to a temporary directory.\n\n", len(jobs))
+		for _, job := range jobs {
+			args := []string{"ffmpeg", "-y", "-i", job.file,
+				"-ss", fmt.Sprintf("%.3f", job.startSec),
+				"-t", fmt.Sprintf("%.3f", job.durSec),
+				"-map", "0:a",
+			}
+			if job.streamCopy {
+				args = append(args, "-c:a", "copy")
+			} else {
+				args = append(args, job.encArgs...)
+			}
+			args = append(args, job.segPath)
+			logf("  %s\n", strings.Join(args, " "))
+		}
+		logf("\n[dry-run] Would concatenate %d segments into: %s\n", len(jobs), outputPath)
+		return nil
+	}
+
 	// Write concat and metadata files.
 	concatPath := filepath.Join(tmpDir, "concat.txt")
 	metaPath := filepath.Join(tmpDir, "chapters.txt")

@@ -18,6 +18,7 @@ import (
 var (
 	quietMode        bool
 	forceMode        bool
+	dryRunMode       bool
 	audioConcurrency int
 )
 

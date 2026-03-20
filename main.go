@@ -78,6 +78,7 @@ Audio flags:
   -book <id>=<dir>     Audio directory for a book ID; repeatable
   -out  <path>         Output file (default: <splicing name>.m4b)
   -j    <n>            Parallel extraction workers (default: number of CPUs)
+  -dry-run             Print ffmpeg commands without executing them
 
 Merge flags:
   -title  <string>     Title for the output file
@@ -221,6 +222,7 @@ func main() {
 		outFlag := fs.String("out", "", "Output path")
 		splicingFlag := fs.String("splicing", "fwd", "Splicing to use")
 		jFlag := fs.Int("j", 0, "Parallel extraction workers (default: number of CPUs)")
+		fs.BoolVar(&dryRunMode, "dry-run", false, "Print ffmpeg commands without executing them")
 		addCommonFlags(fs)
 		var bookFlags repeatable
 		fs.Var(&bookFlags, "book", "id=file-or-dir for a book's audio; repeatable")
