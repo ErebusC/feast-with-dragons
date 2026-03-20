@@ -78,6 +78,7 @@ Audio flags:
   -book <id>=<dir>     Audio directory for a book ID; repeatable
   -out  <path>         Output file (default: <splicing name>.m4b)
   -j    <n>            Parallel extraction workers (default: number of CPUs)
+  -cover <path>        Cover image to embed in output (auto-detected if omitted)
   -dry-run             Print ffmpeg commands without executing them
 
 Merge flags:
@@ -222,6 +223,7 @@ func main() {
 		outFlag := fs.String("out", "", "Output path")
 		splicingFlag := fs.String("splicing", "fwd", "Splicing to use")
 		jFlag := fs.Int("j", 0, "Parallel extraction workers (default: number of CPUs)")
+		coverFlag := fs.String("cover", "", "Path to cover image to embed in output (auto-detected if omitted)")
 		fs.BoolVar(&dryRunMode, "dry-run", false, "Print ffmpeg commands without executing them")
 		addCommonFlags(fs)
 		var bookFlags repeatable
@@ -268,7 +270,12 @@ func main() {
 
 		audioConcurrency = *jFlag
 
-		if err := runAudio(sources, outPath, cfg); err != nil {
+		coverPath := *coverFlag
+		if coverPath == "" {
+			coverPath = findCoverImage(sources)
+		}
+
+		if err := runAudio(sources, outPath, cfg, coverPath); err != nil {
 			fatal("Error: %v", err)
 		}
 

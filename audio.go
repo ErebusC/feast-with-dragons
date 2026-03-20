@@ -365,12 +365,43 @@ func logEncodingPlan(probe *audioProbeResult) {
 }
 
 // ---------------------------------------------------------------------------
+// Cover image detection
+// ---------------------------------------------------------------------------
+
+// findCoverImage searches the directories containing source audio files for a
+// common cover image filename and returns the first match. Returns "" if none
+// is found.
+func findCoverImage(sources map[string][]string) string {
+	candidates := []string{
+		"cover.jpg", "cover.jpeg", "cover.png",
+		"folder.jpg", "folder.jpeg", "folder.png",
+	}
+	seen := map[string]bool{}
+	for _, paths := range sources {
+		for _, p := range paths {
+			dir := filepath.Dir(p)
+			if seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			for _, name := range candidates {
+				if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+					return filepath.Join(dir, name)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
 // Audio builder
 // ---------------------------------------------------------------------------
 
 // runAudio builds a spliced M4B. sources maps each book ID to one or more
-// file or directory paths containing its audio.
-func runAudio(sources map[string][]string, outputPath string, cfg *Config) error {
+// file or directory paths containing its audio. coverPath, if non-empty,
+// is embedded as cover art in the output file; pass "" to skip.
+func runAudio(sources map[string][]string, outputPath string, cfg *Config, coverPath string) error {
 	books := cfg.effectiveBooks()
 	skip := map[string]bool{"intro": true, "credits": true}
 
@@ -514,6 +545,9 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			args = append(args, job.segPath)
 			logf("  %s\n", strings.Join(args, " "))
 		}
+		if coverPath != "" {
+			logf("\n[dry-run] Would embed cover art: %s\n", coverPath)
+		}
 		logf("\n[dry-run] Would concatenate %d segments into: %s\n", len(jobs), outputPath)
 		return nil
 	}
@@ -618,21 +652,32 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 	logf("  This includes a faststart pass that rewrites the file for faster seeking.\n")
 	logf("  The tool will exit once this completes.\n")
 
+	if coverPath != "" {
+		logf("  Cover art: %s\n", filepath.Base(coverPath))
+	}
+
 	concatStart := time.Now()
-	err = runCommand("ffmpeg",
+	concatArgs := []string{
 		"-y",
 		"-loglevel", "error",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", concatPath,
 		"-i", metaPath,
+	}
+	if coverPath != "" {
+		concatArgs = append(concatArgs, "-i", coverPath)
+	}
+	concatArgs = append(concatArgs,
 		"-map", "0:a",
 		"-map_metadata", "1",
 		"-map_chapters", "1",
-		"-c", "copy",
-		"-movflags", "+faststart",
-		outputPath,
 	)
+	if coverPath != "" {
+		concatArgs = append(concatArgs, "-map", "2:v", "-disposition:v", "attached_pic")
+	}
+	concatArgs = append(concatArgs, "-c", "copy", "-movflags", "+faststart", outputPath)
+	err = runCommand("ffmpeg", concatArgs...)
 	if err != nil {
 		return err
 	}
