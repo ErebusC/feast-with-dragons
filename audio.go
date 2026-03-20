@@ -80,7 +80,7 @@ func (lc LogicalChapter) DurSec() float64 {
 func collectAudioSegments(paths []string, minDurSec float64, skipTitles map[string]bool) ([]LogicalChapter, error) {
 	var result []LogicalChapter
 	for _, p := range paths {
-		segs, err := probeChapters(p)
+		segs, err := probeChaptersCached(p)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(p), err)
 		}
@@ -232,7 +232,7 @@ func probeAudioSources(
 		if len(segs) == 0 {
 			continue
 		}
-		af, aerr := probeAudioFormat(segs[0].Segments[0].File)
+		af, aerr := probeAudioFormatCached(segs[0].Segments[0].File)
 		if aerr != nil {
 			logf("  WARNING: could not probe %s audio format: %v\n", id, aerr)
 			continue
