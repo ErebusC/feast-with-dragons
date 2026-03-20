@@ -8,6 +8,7 @@
 //	feast-with-dragons merge    [flags] file1 file2 ...
 //	feast-with-dragons scan     [flags] <epub>
 //	feast-with-dragons validate [flags]
+//	feast-with-dragons show     [splicing]
 package main
 
 import (
@@ -32,6 +33,7 @@ Usage:
   %s validate-audio [flags]
   %s diff           <splicing-a> <splicing-b>
   %s list
+  %s show           [splicing]
 
 Subcommands:
   ebook          Build a spliced epub from source epubs.
@@ -43,6 +45,7 @@ Subcommands:
   validate-audio Dry-run an audio config: probe sources and validate chapter mapping.
   diff           Compare two splicings and show differences.
   list           List all built-in splicings with chapter counts.
+  show           Print the full chapter list of a splicing (default: fwd).
 
 Built-in splicings (-splicing flag):
   fwd             A Feast with Dragons  (default)
@@ -116,13 +119,41 @@ Custom splicings:
   back to built-in defaults for AFFC and ADWD.
   The "words_per_page" field sets the default page marker interval for ebook
   output; the -words-per-page flag overrides it when provided.
-`, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+`, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 }
 
 // fatal prints an error to stderr and exits.
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// runShow prints the full chapter-by-chapter breakdown of a config.
+func runShow(cfg *Config) {
+	fmt.Printf("%s  (%d chapters)\n\n", cfg.Name, len(cfg.Chapters))
+	fmt.Printf("  %-4s  %-8s  %-4s  %s\n", "#", "Book", "Ch", "Title")
+	fmt.Printf("  %s\n", strings.Repeat("-", 70))
+	for i, ch := range cfg.Chapters {
+		bookStr := ch.Book
+		numStr := fmt.Sprintf("%d", ch.Num)
+		suffix := ""
+		if ch.IsCombined() {
+			parts := make([]string, len(ch.Parts))
+			for j, p := range ch.Parts {
+				parts[j] = fmt.Sprintf("%s#%d", p.Book, p.Num)
+			}
+			bookStr = "combined"
+			numStr = "-"
+			suffix = "  [" + strings.Join(parts, " + ") + "]"
+		}
+		if ch.AudioNum > 0 {
+			suffix += fmt.Sprintf("  [audio_num=%d]", ch.AudioNum)
+		}
+		if ch.AudioStart != nil || ch.AudioEnd != nil {
+			suffix += "  [audio_override]"
+		}
+		fmt.Printf("  %-4d  %-8s  %-4s  %s%s\n", i+1, bookStr, numStr, ch.Title, suffix)
+	}
 }
 
 func main() {
@@ -418,6 +449,19 @@ func main() {
 			fatal("Error loading %s: %v", args[1], err)
 		}
 		runDiff(args[0], args[1], left, right)
+
+	case "show":
+		fs := flag.NewFlagSet("show", flag.ExitOnError)
+		fs.Parse(os.Args[2:])
+		name := "fwd"
+		if args := fs.Args(); len(args) > 0 {
+			name = args[0]
+		}
+		cfg, err := loadConfig(name)
+		if err != nil {
+			fatal("Error loading config: %v", err)
+		}
+		runShow(cfg)
 
 	case "help", "-help", "--help", "-h":
 		printUsage()
