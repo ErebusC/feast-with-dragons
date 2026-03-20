@@ -115,17 +115,57 @@ func povName(title string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Audio builder
+// Shared audio helpers
 // ---------------------------------------------------------------------------
 
-// runAudio builds a spliced M4B. sources maps each book ID to one or more
-// file or directory paths containing its audio.
-func runAudio(sources map[string][]string, outputPath string, cfg *Config) error {
-	books := cfg.effectiveBooks()
-	skip := map[string]bool{"intro": true, "credits": true}
+// lookupAudioSegment returns the logical chapter at 1-indexed position num
+// for the given book ID.
+func lookupAudioSegment(bookID string, num int, segsPerBook map[string][]LogicalChapter) (LogicalChapter, error) {
+	segs, ok := segsPerBook[bookID]
+	if !ok {
+		return LogicalChapter{}, fmt.Errorf("no audio loaded for book %q", bookID)
+	}
+	idx := num - 1
+	if idx < 0 || idx >= len(segs) {
+		return LogicalChapter{}, fmt.Errorf("%s chapter %d (index %d) out of range (have %d segments)",
+			bookID, num, idx, len(segs))
+	}
+	return segs[idx], nil
+}
 
-	// Collect segments per book ID, preserving insertion order from config.
+// ---------------------------------------------------------------------------
+// Probe result
+// ---------------------------------------------------------------------------
+
+// audioProbeResult holds everything learned during the probe phase.
+type audioProbeResult struct {
+	SegsPerBook   map[string][]LogicalChapter
+	EncArgs       []string               // ffmpeg args to re-encode to the target format
+	BookFormats   map[string]AudioFormat // probed format per book ID
+	CanStreamCopy map[string]bool        // per book: safe to stream-copy its segments
+	AllStreamCopy bool                   // true when every book can be stream-copied
+	TargetRate    int                    // output sample rate
+	TargetCh      int                    // output channel count
+}
+
+// probeAudioSources collects and probes all audio source files defined in
+// sources. It returns an audioProbeResult describing the logical chapters,
+// per-book formats, and the encoding strategy for each book.
+//
+// A book's segments can be stream-copied when its codec is AAC and its sample
+// rate and channel count already match the target output format. Any book that
+// differs on these parameters must be re-encoded for clean concatenation.
+// Segments with audio_start/audio_end overrides always require re-encoding
+// for sample-accurate cuts regardless of format.
+func probeAudioSources(
+	sources map[string][]string,
+	cfg *Config,
+	books map[string]BookConfig,
+	skip map[string]bool,
+) (*audioProbeResult, error) {
 	segsPerBook := make(map[string][]LogicalChapter)
+
+	// Collect ordered book IDs from the config, preserving first-seen order.
 	var orderedIDs []string
 	seen := map[string]bool{}
 	for _, ch := range cfg.Chapters {
@@ -146,19 +186,18 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 	}
 
 	for _, id := range orderedIDs {
-		paths := sources[id]
 		var allFiles []string
-		for _, p := range paths {
-			files, err := collectAudioFiles(p)
-			if err != nil {
-				return fmt.Errorf("reading %s audio (%s): %w", id, p, err)
+		for _, p := range sources[id] {
+			files, ferr := collectAudioFiles(p)
+			if ferr != nil {
+				return nil, fmt.Errorf("reading %s audio (%s): %w", id, p, ferr)
 			}
 			allFiles = append(allFiles, files...)
 		}
 		logf("Probing %s chapters...\n", id)
-		segs, err := collectAudioSegments(allFiles, 30.0, skip)
-		if err != nil {
-			return fmt.Errorf("%s: %w", id, err)
+		segs, serr := collectAudioSegments(allFiles, 30.0, skip)
+		if serr != nil {
+			return nil, fmt.Errorf("%s: %w", id, serr)
 		}
 		logf("  %d chapters found\n", len(segs))
 		bk := books[id]
@@ -184,75 +223,83 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		segsPerBook[id] = segs
 	}
 
-	// Probe audio format from source files to determine encoding parameters.
-	// When source books have different codecs, sample rates, or channel
-	// counts, stream-copy produces a file where only the first segment's
-	// format is honoured by the decoder. Re-encoding all segments to a
-	// consistent format avoids this.
-	var encArgs []string
-	{
-		var maxRate, maxCh, maxBR int
-		for _, id := range orderedIDs {
-			segs := segsPerBook[id]
-			if len(segs) == 0 {
-				continue
-			}
-			// Probe the first segment's source file.
-			af, err := probeAudioFormat(segs[0].Segments[0].File)
-			if err != nil {
-				logf("  WARNING: could not probe %s audio format: %v\n", id, err)
-				continue
-			}
-			logf("  %s format: %s %dHz %dch %dkbps\n",
-				id, af.Codec, af.SampleRate, af.Channels, af.BitRate/1000)
-			if af.SampleRate > maxRate {
-				maxRate = af.SampleRate
-			}
-			if af.Channels > maxCh {
-				maxCh = af.Channels
-			}
-			if af.BitRate > maxBR {
-				maxBR = af.BitRate
-			}
+	// Probe the audio format of the first segment of each book to determine
+	// target encoding parameters and which books can be stream-copied.
+	bookFormats := make(map[string]AudioFormat)
+	var maxRate, maxCh, maxBR int
+	for _, id := range orderedIDs {
+		segs := segsPerBook[id]
+		if len(segs) == 0 {
+			continue
 		}
-		// Fall back to sensible defaults if probing failed.
-		if maxRate == 0 {
-			maxRate = 44100
+		af, aerr := probeAudioFormat(segs[0].Segments[0].File)
+		if aerr != nil {
+			logf("  WARNING: could not probe %s audio format: %v\n", id, aerr)
+			continue
 		}
-		if maxCh == 0 {
-			maxCh = 2
+		logf("  %s format: %s %dHz %dch %dkbps\n",
+			id, af.Codec, af.SampleRate, af.Channels, af.BitRate/1000)
+		bookFormats[id] = af
+		if af.SampleRate > maxRate {
+			maxRate = af.SampleRate
 		}
-		if maxBR == 0 {
-			maxBR = 128000
+		if af.Channels > maxCh {
+			maxCh = af.Channels
 		}
-		// Round bitrate to nearest common value.
-		brK := maxBR / 1000
-		if brK < 48 {
-			brK = 48
-		}
-		logf("  Output format: aac %dHz %dch %dkbps\n", maxRate, maxCh, brK)
-
-		encArgs = []string{
-			"-c:a", "aac",
-			"-b:a", fmt.Sprintf("%dk", brK),
-			"-ar", fmt.Sprintf("%d", maxRate),
-			"-ac", fmt.Sprintf("%d", maxCh),
+		if af.BitRate > maxBR {
+			maxBR = af.BitRate
 		}
 	}
+	if maxRate == 0 {
+		maxRate = 44100
+	}
+	if maxCh == 0 {
+		maxCh = 2
+	}
+	if maxBR == 0 {
+		maxBR = 128000
+	}
+	brK := maxBR / 1000
+	if brK < 48 {
+		brK = 48
+	}
+	logf("  Target output: aac %dHz %dch %dkbps\n", maxRate, maxCh, brK)
 
-	lookupSegment := func(bookID string, num int) (LogicalChapter, error) {
-		segs, ok := segsPerBook[bookID]
+	encArgs := []string{
+		"-c:a", "aac",
+		"-b:a", fmt.Sprintf("%dk", brK),
+		"-ar", fmt.Sprintf("%d", maxRate),
+		"-ac", fmt.Sprintf("%d", maxCh),
+	}
+
+	// Determine per-book stream-copy eligibility.
+	// A book can be stream-copied when its codec is AAC and its sample rate
+	// and channel count already match the target — no transcoding needed.
+	// Bitrate differences are acceptable; the concat demuxer handles them.
+	canStreamCopy := make(map[string]bool, len(bookFormats))
+	allCopy := len(bookFormats) > 0 // false if all probes failed
+	for id, af := range bookFormats {
+		ok := af.Codec == "aac" && af.SampleRate == maxRate && af.Channels == maxCh
+		canStreamCopy[id] = ok
 		if !ok {
-			return LogicalChapter{}, fmt.Errorf("no audio loaded for book %q", bookID)
+			allCopy = false
 		}
-		idx := num - 1
-		if idx < 0 || idx >= len(segs) {
-			return LogicalChapter{}, fmt.Errorf("%s chapter %d (index %d) out of range (have %d segments)",
-				bookID, num, idx, len(segs))
-		}
-		return segs[idx], nil
 	}
 
+	return &audioProbeResult{
+		SegsPerBook:   segsPerBook,
+		EncArgs:       encArgs,
+		BookFormats:   bookFormats,
+		CanStreamCopy: canStreamCopy,
+		AllStreamCopy: allCopy,
+		TargetRate:    maxRate,
+		TargetCh:      maxCh,
+	}, nil
+}
+
+// validateAudioMapping validates and logs the chapter-to-segment mapping for
+// a config. Returns an error if any chapter maps to an out-of-range segment.
+func validateAudioMapping(cfg *Config, segsPerBook map[string][]LogicalChapter) error {
 	logf("Validating chapter mapping...\n")
 	for i, ch := range cfg.Chapters {
 		bookID := ch.Book
@@ -261,11 +308,11 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			bookID = ch.Parts[0].Book
 			audioNum = ch.Parts[0].Num
 		}
-		lc, err := lookupSegment(bookID, audioNum)
+		lc, err := lookupAudioSegment(bookID, audioNum, segsPerBook)
 		if err != nil {
 			return err
 		}
-		// Title mismatch note -- only logged here, not during extraction.
+		// Title mismatch is logged as a note only; it doesn't stop the build.
 		expected := povName(ch.Title)
 		if !strings.EqualFold(lc.Title, expected) &&
 			!strings.Contains(strings.ToLower(lc.Title), strings.ToLower(expected)) &&
@@ -295,6 +342,57 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			logf("  WARNING: segment is only %.0fs -- this audiobook edition may have combined it with the preceding chapter\n", dur)
 		}
 	}
+	return nil
+}
+
+// logEncodingPlan prints which books will be stream-copied and which will be
+// re-encoded. Used by both runAudio and runAudioValidate.
+func logEncodingPlan(probe *audioProbeResult) {
+	if probe.AllStreamCopy {
+		logf("Encoding: all books have compatible formats — stream copying all segments.\n")
+		return
+	}
+	logf("Encoding plan:\n")
+	for _, id := range sortedKeys(probe.BookFormats) {
+		af := probe.BookFormats[id]
+		if probe.CanStreamCopy[id] {
+			logf("  %s: %s %dHz %dch — stream copy\n", id, af.Codec, af.SampleRate, af.Channels)
+		} else {
+			logf("  %s: %s %dHz %dch — re-encode to %dHz %dch\n",
+				id, af.Codec, af.SampleRate, af.Channels, probe.TargetRate, probe.TargetCh)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Audio builder
+// ---------------------------------------------------------------------------
+
+// runAudio builds a spliced M4B. sources maps each book ID to one or more
+// file or directory paths containing its audio.
+func runAudio(sources map[string][]string, outputPath string, cfg *Config) error {
+	books := cfg.effectiveBooks()
+	skip := map[string]bool{"intro": true, "credits": true}
+
+	probe, err := probeAudioSources(sources, cfg, books, skip)
+	if err != nil {
+		return err
+	}
+
+	if err := validateAudioMapping(cfg, probe.SegsPerBook); err != nil {
+		return err
+	}
+
+	// Show the encoding plan and prompt when re-encoding is required.
+	logEncodingPlan(probe)
+	if !probe.AllStreamCopy && !forceMode {
+		fmt.Fprintf(os.Stderr, "\nSome segments require re-encoding to normalise formats.")
+		fmt.Fprintf(os.Stderr, " This may take several minutes.\nContinue? [Y/n]: ")
+		if !readYesNo() {
+			fmt.Fprintln(os.Stderr, "Build cancelled.")
+			os.Exit(0)
+		}
+	}
 
 	tmpDir, err := os.MkdirTemp(filepath.Dir(outputPath), "feast-with-dragons-audio-*")
 	if err != nil {
@@ -302,17 +400,16 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Build the list of extraction jobs, the concat file, and the metadata
-	// file up front. All filenames and durations are known before extraction
-	// starts, so these can be written first and then extractions run in
-	// parallel without coordination.
-
+	// Build the list of extraction jobs. Each job carries its own encoding
+	// args so stream-copy and re-encode jobs can run in the same worker pool.
 	type extractJob struct {
-		segPath  string
-		file     string
-		startSec float64
-		durSec   float64
-		label    string // for error messages
+		segPath     string
+		file        string
+		startSec    float64
+		durSec      float64
+		label       string
+		streamCopy  bool     // true = -c:a copy; false = use encArgs
+		encArgs     []string // used when streamCopy is false
 	}
 
 	var jobs []extractJob
@@ -335,12 +432,15 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			bookID = ch.Parts[0].Book
 			audioNum = ch.Parts[0].Num
 		}
-		lc, _ := lookupSegment(bookID, audioNum)
+		lc, _ := lookupAudioSegment(bookID, audioNum, probe.SegsPerBook)
 
-		// When audio_start or audio_end are set, the chapter is extracted
-		// from explicit timestamps rather than the segment's metadata
-		// boundaries. This handles audiobook editions where two book
-		// chapters are merged into one audio track.
+		// Segments with timestamp overrides always require re-encoding for
+		// sample-accurate cuts. Standard chapter-boundary segments are safe
+		// to stream-copy when the source format matches the target.
+		canCopy := probe.CanStreamCopy[bookID] && ch.AudioStart == nil && ch.AudioEnd == nil
+
+		// When audio_start or audio_end are set, extract from explicit
+		// timestamps rather than the segment's metadata boundaries.
 		if ch.AudioStart != nil || ch.AudioEnd != nil {
 			seg := lc.Segments[0]
 			startSec := seg.StartSec
@@ -355,11 +455,13 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			segName := fmt.Sprintf("seg_%04d_00.m4a", i)
 			segPath := filepath.Join(tmpDir, segName)
 			jobs = append(jobs, extractJob{
-				segPath:  segPath,
-				file:     seg.File,
-				startSec: startSec,
-				durSec:   dur,
-				label:    fmt.Sprintf("%s ch%d (override)", bookID, audioNum),
+				segPath:    segPath,
+				file:       seg.File,
+				startSec:   startSec,
+				durSec:     dur,
+				label:      fmt.Sprintf("%s ch%d (override)", bookID, audioNum),
+				streamCopy: canCopy,
+				encArgs:    probe.EncArgs,
 			})
 			escaped := strings.ReplaceAll(segName, "'", `\'`)
 			concatLines = append(concatLines, fmt.Sprintf("file '%s'", escaped))
@@ -376,11 +478,13 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 			segName := fmt.Sprintf("seg_%04d_%02d.m4a", i, j)
 			segPath := filepath.Join(tmpDir, segName)
 			jobs = append(jobs, extractJob{
-				segPath:  segPath,
-				file:     seg.File,
-				startSec: seg.StartSec,
-				durSec:   seg.DurSec(),
-				label:    fmt.Sprintf("%s ch%d seg%d", bookID, audioNum, j),
+				segPath:    segPath,
+				file:       seg.File,
+				startSec:   seg.StartSec,
+				durSec:     seg.DurSec(),
+				label:      fmt.Sprintf("%s ch%d seg%d", bookID, audioNum, j),
+				streamCopy: canCopy,
+				encArgs:    probe.EncArgs,
 			})
 			escaped := strings.ReplaceAll(segName, "'", `\'`)
 			concatLines = append(concatLines, fmt.Sprintf("file '%s'", escaped))
@@ -404,7 +508,16 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		return fmt.Errorf("writing chapter metadata: %w", err)
 	}
 
-	// Extract segments in parallel.
+	// Count stream-copy vs re-encode jobs for the progress header.
+	var copyJobs, reencodeJobs int
+	for _, j := range jobs {
+		if j.streamCopy {
+			copyJobs++
+		} else {
+			reencodeJobs++
+		}
+	}
+
 	workers := audioConcurrency
 	if workers <= 0 {
 		workers = runtime.NumCPU()
@@ -413,8 +526,18 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		workers = len(jobs)
 	}
 
-	logf("Extracting and re-encoding %d segments using %d workers...\n", len(jobs), workers)
-	logf("  Re-encoding normalises audio format across source books for clean concatenation.\n")
+	switch {
+	case reencodeJobs == 0:
+		logf("Extracting %d segments via stream copy using %d workers...\n", len(jobs), workers)
+	case copyJobs == 0:
+		logf("Extracting and re-encoding %d segments using %d workers...\n", len(jobs), workers)
+		logf("  Re-encoding normalises audio format across source books for clean concatenation.\n")
+	default:
+		logf("Extracting %d segments (%d stream-copy, %d re-encode) using %d workers...\n",
+			len(jobs), copyJobs, reencodeJobs, workers)
+		logf("  Re-encoding normalises format for %d segments.\n", reencodeJobs)
+	}
+
 	extractStart := time.Now()
 
 	var completed int64
@@ -434,9 +557,6 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		go func() {
 			defer wg.Done()
 			for job := range jobCh {
-				// Re-encode each segment to a consistent format so the
-				// concat demuxer produces a valid output file regardless
-				// of source codec differences between books.
 				args := []string{
 					"-y",
 					"-i", job.file,
@@ -444,11 +564,14 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 					"-t", fmt.Sprintf("%f", job.durSec),
 					"-map", "0:a",
 				}
-				args = append(args, encArgs...)
+				if job.streamCopy {
+					args = append(args, "-c:a", "copy")
+				} else {
+					args = append(args, job.encArgs...)
+				}
 				args = append(args, job.segPath)
 
-				err := runCommandSilent("ffmpeg", args...)
-				if err != nil {
+				if err := runCommandSilent("ffmpeg", args...); err != nil {
 					errOnce.Do(func() {
 						firstErr = fmt.Errorf("extracting %s: %w", job.label, err)
 					})
@@ -500,6 +623,97 @@ func runAudio(sources map[string][]string, outputPath string, cfg *Config) error
 		time.Since(concatStart).Truncate(time.Second))
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// Audio validate
+// ---------------------------------------------------------------------------
+
+// runAudioValidate dry-runs an audio splicing config: it probes the source
+// audio files and validates the chapter-to-segment mapping without extracting
+// any audio. Also reports the encoding plan (stream copy vs re-encode per book).
+func runAudioValidate(sources map[string][]string, cfg *Config) error {
+	books := cfg.effectiveBooks()
+	skip := map[string]bool{"intro": true, "credits": true}
+
+	probe, err := probeAudioSources(sources, cfg, books, skip)
+	if err != nil {
+		return err
+	}
+
+	if err := validateAudioMapping(cfg, probe.SegsPerBook); err != nil {
+		return err
+	}
+
+	fmt.Printf("\nConfig:   %s\n", cfg.Name)
+	fmt.Printf("Chapters: %d\n", len(cfg.Chapters))
+
+	// Show the encoding plan without prompting -- this is a dry run.
+	if probe.AllStreamCopy {
+		fmt.Printf("Format:   all books compatible — stream copy would be used\n")
+	} else {
+		for _, id := range sortedKeys(probe.BookFormats) {
+			af := probe.BookFormats[id]
+			if probe.CanStreamCopy[id] {
+				fmt.Printf("Format:   %s %s %dHz %dch — stream copy\n",
+					id, af.Codec, af.SampleRate, af.Channels)
+			} else {
+				fmt.Printf("Format:   %s %s %dHz %dch — would re-encode to %dHz %dch\n",
+					id, af.Codec, af.SampleRate, af.Channels, probe.TargetRate, probe.TargetCh)
+			}
+		}
+	}
+
+	fmt.Printf("\nAll %d chapters validated successfully.\n", len(cfg.Chapters))
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Audio scan
+// ---------------------------------------------------------------------------
+
+// runAudioScan probes an audio file or directory and prints the embedded
+// chapter list with timings. Useful for inspecting source files when authoring
+// configs or finding the correct audio_start/audio_end split points.
+func runAudioScan(p string) error {
+	files, err := collectAudioFiles(p)
+	if err != nil {
+		return fmt.Errorf("reading audio: %w", err)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("no audio files found in %q", p)
+	}
+
+	fmt.Printf("Path:  %s\n", p)
+	fmt.Printf("Files: %d\n\n", len(files))
+
+	grandTotal := 0
+	for _, file := range files {
+		segs, err := probeChapters(file)
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(file), err)
+		}
+		fmt.Printf("%s  (%d chapters)\n", filepath.Base(file), len(segs))
+		fmt.Printf("  %-5s  %-10s  %-10s  %-10s  %s\n", "Num", "Start", "End", "Duration", "Title")
+		fmt.Printf("  %s\n", strings.Repeat("-", 68))
+		for i, seg := range segs {
+			fmt.Printf("  %-5d  %-10.1f  %-10.1f  %-10s  %s\n",
+				grandTotal+i+1,
+				seg.StartSec,
+				seg.EndSec,
+				formatDuration(seg.DurSec()),
+				seg.Title,
+			)
+		}
+		fmt.Println()
+		grandTotal += len(segs)
+	}
+	fmt.Printf("Total: %d chapters across %d file(s)\n", grandTotal, len(files))
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Duration formatting
+// ---------------------------------------------------------------------------
 
 // formatDuration converts seconds to a human-readable "Xh Ym Zs" string.
 func formatDuration(secs float64) string {

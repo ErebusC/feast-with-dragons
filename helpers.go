@@ -310,6 +310,29 @@ func (r *repeatable) Set(v string) error { *r = append(*r, v); return nil }
 func binaryName() string { return filepath.Base(os.Args[0]) }
 
 // ---------------------------------------------------------------------------
+// Interactive prompt helpers
+// ---------------------------------------------------------------------------
+
+// readYesNo reads one line from stdin and returns true if the response is
+// empty (user pressed Enter), "y", or "yes". Any other input returns false.
+func readYesNo() bool {
+	var resp string
+	fmt.Fscan(os.Stdin, &resp)
+	r := strings.ToLower(strings.TrimSpace(resp))
+	return r == "" || r == "y" || r == "yes"
+}
+
+// sortedKeys returns the keys of m sorted alphabetically.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ---------------------------------------------------------------------------
 // FFmpeg metadata escaping
 // ---------------------------------------------------------------------------
 

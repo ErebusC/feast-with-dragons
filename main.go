@@ -23,20 +23,26 @@ func printUsage() {
 	fmt.Printf(`%s -- splice multiple epub or audio files into a custom reading order
 
 Usage:
-  %s ebook     [flags]
-  %s audio     [flags]
-  %s merge     [flags] file1 file2 ...
-  %s scan      [-init <config.json>] [-id <BOOKID>] [-json] <epub>
-  %s validate  [flags]
-  %s diff      <splicing-a> <splicing-b>
+  %s ebook          [flags]
+  %s audio          [flags]
+  %s merge          [flags] file1 file2 ...
+  %s scan           [-init <config.json>] [-id <BOOKID>] [-json] <epub>
+  %s scan-audio     <file-or-directory>
+  %s validate       [flags]
+  %s validate-audio [flags]
+  %s diff           <splicing-a> <splicing-b>
+  %s list
 
 Subcommands:
-  ebook     Build a spliced epub from source epubs.
-  audio     Build a spliced M4B from source audio files.
-  merge     Concatenate whole books without chapter-level splicing.
-  scan      Print the spine contents of an epub (useful for authoring configs).
-  validate  Dry-run a config against source epubs without producing output.
-  diff      Compare two splicings and show differences.
+  ebook          Build a spliced epub from source epubs.
+  audio          Build a spliced M4B from source audio files.
+  merge          Concatenate whole books without chapter-level splicing.
+  scan           Print the spine contents of an epub (useful for authoring configs).
+  scan-audio     Print the chapter list of an audio file or directory with timings.
+  validate       Dry-run a config against source epubs without producing output.
+  validate-audio Dry-run an audio config: probe sources and validate chapter mapping.
+  diff           Compare two splicings and show differences.
+  list           List all built-in splicings with chapter counts.
 
 Built-in splicings (-splicing flag):
   fwd             A Feast with Dragons  (default)
@@ -59,7 +65,8 @@ Ebook flags:
   -out  <path>         Output file (default: <splicing name>.epub)
   -annotate            Add a source book annotation to each chapter
   -numbered-toc        Prepend chapter numbers to the table of contents
-  -words-per-page <n>  Approximate words between page markers (default: 500)
+  -words-per-page <n>  Approximate words between page markers
+                       (overrides words_per_page in config; default: 500)
 
 Audio flags:
   -splicing <n>        Splicing to use (default: fwd)
@@ -79,6 +86,13 @@ Validate flags:
   -affc <path>         Path to AFFC epub (auto-detected if omitted)
   -adwd <path>         Path to ADWD epub (auto-detected if omitted)
   -book <id>=<path>    Source epub for a book ID; repeatable
+
+Validate-audio flags:
+  -splicing <n>        Splicing to validate (default: fwd)
+  -affc <path>         File or directory for AFFC audio (auto-detected if omitted)
+  -adwd <path>         File or directory for ADWD audio (auto-detected if omitted)
+  -book <id>=<path>    Audio file or directory for a book ID; repeatable
+  -quiet               Suppress progress output
 
 Scan flags:
   -init <path>         Write a skeleton JSON config instead of printing the spine
@@ -100,7 +114,9 @@ Custom splicings:
   Any JSON file can be passed to -splicing. See the built-in configs in the
   configs/ directory for the schema. The "books" key is optional and falls
   back to built-in defaults for AFFC and ADWD.
-`, bin, bin, bin, bin, bin, bin, bin)
+  The "words_per_page" field sets the default page marker interval for ebook
+  output; the -words-per-page flag overrides it when provided.
+`, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 }
 
 // fatal prints an error to stderr and exits.
@@ -125,7 +141,7 @@ func main() {
 		splicingFlag := fs.String("splicing", "fwd", "Splicing to use")
 		annotateFlag := fs.Bool("annotate", false, "Add source book annotation to each chapter")
 		numberedTOCFlag := fs.Bool("numbered-toc", false, "Prepend chapter numbers to the table of contents")
-		wppFlag := fs.Int("words-per-page", 500, "Approximate words between page markers (lower = more pages)")
+		wppFlag := fs.Int("words-per-page", 0, "Approximate words between page markers (overrides config; default: 500)")
 		addCommonFlags(fs)
 		var bookFlags repeatable
 		fs.Var(&bookFlags, "book", "id=path for a source epub; repeatable")
@@ -154,8 +170,13 @@ func main() {
 		checkOutputExists(outPath)
 		resolveDefaultSources(sources, cwd, ".epub")
 
-		if *wppFlag > 0 {
-			wordsPerPage = *wppFlag
+		// Resolution order: -words-per-page flag > words_per_page in config > built-in default (500).
+		wpp := *wppFlag
+		if wpp == 0 {
+			wpp = cfg.WordsPerPage
+		}
+		if wpp > 0 {
+			wordsPerPage = wpp
 		}
 
 		if err := runEbook(sources, outPath, cfg, *annotateFlag, *numberedTOCFlag); err != nil {
@@ -268,6 +289,87 @@ func main() {
 			if err := runScan(args[0]); err != nil {
 				fatal("Error: %v", err)
 			}
+		}
+
+	case "validate-audio":
+		fs := flag.NewFlagSet("validate-audio", flag.ExitOnError)
+		affcFlag := fs.String("affc", "", "File or directory for AFFC audio")
+		adwdFlag := fs.String("adwd", "", "File or directory for ADWD audio")
+		splicingFlag := fs.String("splicing", "fwd", "Splicing to validate")
+		var bookFlags repeatable
+		fs.Var(&bookFlags, "book", "id=file-or-dir for a book's audio; repeatable")
+		fs.BoolVar(&quietMode, "quiet", false, "Suppress progress output")
+		fs.Parse(os.Args[2:])
+
+		cfg, err := loadConfig(*splicingFlag)
+		if err != nil {
+			fatal("Error loading config: %v", err)
+		}
+
+		rawSources, err := parseBookFlags(bookFlags)
+		if err != nil {
+			fatal("Error: %v", err)
+		}
+		sources := make(map[string][]string, len(rawSources))
+		for id, p := range rawSources {
+			sources[id] = []string{p}
+		}
+		if *affcFlag != "" {
+			sources["AFFC"] = []string{*affcFlag}
+		}
+		if *adwdFlag != "" {
+			sources["ADWD"] = []string{*adwdFlag}
+		}
+		if len(sources["AFFC"]) == 0 {
+			if found := autoDetectAudioFiles(cwd, "feast", "crows"); len(found) > 0 {
+				sources["AFFC"] = found
+				logf("Auto-detected AFFC audio: %v\n", found)
+			}
+		}
+		if len(sources["ADWD"]) == 0 {
+			if found := autoDetectAudioFiles(cwd, "dance", "dragons"); len(found) > 0 {
+				sources["ADWD"] = found
+				logf("Auto-detected ADWD audio: %v\n", found)
+			}
+		}
+
+		if err := runAudioValidate(sources, cfg); err != nil {
+			fatal("Error: %v", err)
+		}
+
+	case "scan-audio":
+		fs := flag.NewFlagSet("scan-audio", flag.ExitOnError)
+		fs.Parse(os.Args[2:])
+		args := fs.Args()
+		if len(args) == 0 {
+			fatal("Usage: %s scan-audio <file-or-directory>", binaryName())
+		}
+		if err := runAudioScan(args[0]); err != nil {
+			fatal("Error: %v", err)
+		}
+
+	case "list":
+		type splicingMeta struct {
+			name string
+			desc string
+		}
+		splicings := []splicingMeta{
+			{"fwd", "A Feast with Dragons -- widely-recommended chronological interleave"},
+			{"boiled", "Boiled Leather -- similar to fwd with some chapter reordering"},
+			{"ball", "A Ball of Beasts -- combines Samwell I and Jon II into one chapter"},
+			{"fwd-audible", "A Feast with Dragons (Audible AFFC audio fix)"},
+			{"boiled-audible", "Boiled Leather (Audible AFFC audio fix)"},
+			{"ball-audible", "A Ball of Beasts (Audible AFFC audio fix)"},
+		}
+		fmt.Printf("%-16s  %-8s  %s\n", "Name", "Chapters", "Description")
+		fmt.Println(strings.Repeat("-", 82))
+		for _, s := range splicings {
+			cfg, err := loadConfig(s.name)
+			count := "?"
+			if err == nil {
+				count = fmt.Sprintf("%d", len(cfg.Chapters))
+			}
+			fmt.Printf("%-16s  %-8s  %s\n", s.name, count, s.desc)
 		}
 
 	case "validate":

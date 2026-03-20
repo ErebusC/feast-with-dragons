@@ -27,12 +27,13 @@ var ballAudibleJSON []byte
 
 // Config is the top-level structure for a splicing JSON file.
 type Config struct {
-	Name        string                `json:"name"`
-	Author      string                `json:"author,omitempty"`
-	Series      string                `json:"series,omitempty"`
-	Books       map[string]BookConfig `json:"books,omitempty"`
-	FrontMatter []FrontMatterEntry    `json:"front_matter"`
-	Chapters    []ChapterEntry        `json:"chapters"`
+	Name         string                `json:"name"`
+	Author       string                `json:"author,omitempty"`
+	Series       string                `json:"series,omitempty"`
+	WordsPerPage int                   `json:"words_per_page,omitempty"`
+	Books        map[string]BookConfig `json:"books,omitempty"`
+	FrontMatter  []FrontMatterEntry    `json:"front_matter"`
+	Chapters     []ChapterEntry        `json:"chapters"`
 }
 
 // BookConfig describes how to extract content from a source epub or audio
